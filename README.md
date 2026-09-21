@@ -9,7 +9,7 @@
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
 ![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
 
-> **Project status:** in active development (12-day solo build). The 9 services are scaffolded and the architecture is designed. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** in active development (12-day solo build). Day 1 is done: the 9 services are scaffolded, the shared `common` library exists, and the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -271,7 +271,7 @@ flowchart LR
 | `audit-service` | 8087 | MongoDB | Append-only event trail |
 | `ai-agent-service` | 8088 | none | Read-only spending advice via Spring AI and a local Ollama model |
 
-Infrastructure ports: PostgreSQL 5432, MongoDB 27017, Kafka 9092, MailHog 1025 (SMTP) and 8025 (UI), Ollama 11434.
+Infrastructure ports (on your machine): PostgreSQL **5433** (mapped away from 5432 so it never clashes with a Postgres you may already run), MongoDB 27017, Kafka 9092, MailHog 1025 (SMTP) and 8025 (UI), Ollama 11434.
 
 ### Kafka topics
 
@@ -305,7 +305,7 @@ Each topic also has a `.retry` and a `.dlt` companion. Messages are keyed by `ac
 
 ```
 sentinelbank/
-├── common/                  shared library (event envelope, correlation-ID filter, errors, idempotency)
+├── common/                  shared library (correlation ID, error model, event envelope, topic names)
 ├── services/                one Maven project per service
 │   ├── api-gateway/
 │   ├── auth-service/
@@ -330,20 +330,32 @@ Base package per service: `com.sentinelbank.<name>` (for example `com.sentinelba
 
 **Prerequisites:** JDK 25, Docker Desktop, Node.js (for the Angular app). Maven is not needed, since each service ships with `./mvnw`.
 
-> The commands below are the **planned** workflow. The infrastructure file (`infra/docker-compose.yml`) lands in the next roadmap step, so they won't work until it does.
-
 ```bash
-# 1. Start infrastructure: PostgreSQL, MongoDB, Kafka, MailHog  (planned)
+# 1. Start infrastructure: PostgreSQL, MongoDB, Kafka (topics are created automatically), MailHog
 docker compose -f infra/docker-compose.yml up -d
 
-# 2. Run a service, for example the gateway  (works once the service has its config)
+# 2. Build everything from the repo root (common library + all 9 services)
+./mvnw -DskipTests package
+
+# 3. Run a service, for example the gateway  (services get their config as they are implemented)
 cd services/api-gateway
 ./mvnw spring-boot:run
 
-# 3. Run the Angular app  (planned, Day 9)
+# 4. Run the Angular app  (planned, Day 9)
 cd frontend
 npm install && npm start
 ```
+
+What step 1 gives you:
+
+| Piece | Where | Notes |
+|---|---|---|
+| PostgreSQL 17 | `localhost:5433`, db `sentinelbank`, user/password `sentinel` | One schema per service (`auth`, `account`, `transaction`, `partner_bank`, `notification`). Local dev credentials only |
+| MongoDB 8 | `localhost:27017` | Used by `fraud-service` and `audit-service` |
+| Kafka 4 (KRaft) | `localhost:9092` | The 3 topics plus `.retry` and `.dlt` companions are created on start |
+| MailHog | SMTP `localhost:1025`, UI http://localhost:8025 | Catches the emails `notification-service` sends |
+
+To stop everything: `docker compose -f infra/docker-compose.yml down` (add `-v` to also wipe the data).
 
 ### Demo script (planned, Day 12)
 1. Register and log in.
@@ -373,7 +385,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 
 | Day | Focus | Status |
 |---|---|---|
-| 1 | Foundation: repo layout, the 9 service skeletons, infra compose file, `common` module | 🚧 skeletons done |
+| 1 | Foundation: repo layout, the 9 service skeletons, infra compose file, `common` module | ✅ done |
 | 2 | Auth service and gateway (JWT, routing, rate limit) | ⬜ |
 | 3 | Account service (ledger, optimistic locking, idempotent debit/credit) | ⬜ |
 | 4 | Transaction service (transfer API, idempotency, saga state, outbox) | ⬜ |

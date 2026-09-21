@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Aggregator only: lets you build everything with one command from the repo root
+  (./mvnw -DskipTests package). It is NOT a parent. Each service keeps its own
+  spring-boot-starter-parent so it can also be built and run on its own.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+		 xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>com.sentinelbank</groupId>
+	<artifactId>sentinelbank</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<packaging>pom</packaging>
+	<name>sentinelbank</name>
+	<description>SentinelBank banking microservices platform</description>
+
+	<modules>
+		<module>common</module>
+		<module>services/api-gateway</module>
+		<module>services/auth-service</module>
+		<module>services/account-service</module>
+		<module>services/transaction-service</module>
+		<module>services/partner-bank-service</module>
+		<module>services/fraud-service</module>
+		<module>services/notification-service</module>
+		<module>services/audit-service</module>
+		<module>services/ai-agent-service</module>
+	</modules>
+</project>
