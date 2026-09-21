@@ -1,0 +1,22 @@
+# Build output
+target/
+build/
+dist/
+out/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Node / Angular
+node_modules/
+.angular/
+
+# Env and secrets
+.env
+*.local
+
+# Logs
+*.log
