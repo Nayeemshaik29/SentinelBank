@@ -17,6 +17,7 @@ node_modules/
 # Env and secrets
 .env
 *.local
+.claude/settings.local.json
 
 # Logs
 *.log
