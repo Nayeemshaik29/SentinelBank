@@ -1,3 +1,44 @@
+server:
+  port: 8081
+
 spring:
   application:
     name: auth-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:sentinelbank}?currentSchema=auth
+    username: ${DB_USER:sentinel}
+    password: ${DB_PASSWORD:sentinel}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate   # Flyway owns the schema; Hibernate only checks that it matches
+    properties:
+      hibernate.default_schema: auth   # explicit, so it works whatever JDBC URL is used
+  flyway:
+    schemas: auth
+    default-schema: auth
+    create-schemas: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{correlationId:-}]"
+
+sentinelbank:
+  jwt:
+    # HS256 signing key shared with the gateway. At least 32 bytes. The default is for local dev ONLY:
+    # set JWT_SECRET to a long random value anywhere else.
+    secret: ${JWT_SECRET:dev-only-secret-change-me-dev-only-secret-change-me}
+    issuer: sentinelbank
+    access-token-ttl: 15m
+    refresh-token-ttl: 7d
+  seed:
+    # Creates two demo users on first start (customer@sentinelbank.dev and analyst@sentinelbank.dev).
+    # Local demo convenience only: turn it off with SEED_DEMO_USERS=false.
+    enabled: ${SEED_DEMO_USERS:true}
+    password: ${SEED_PASSWORD:Demo#12345}

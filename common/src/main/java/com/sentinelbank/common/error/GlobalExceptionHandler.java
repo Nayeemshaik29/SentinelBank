@@ -3,19 +3,21 @@ package com.sentinelbank.common.error;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-/** Turns exceptions into RFC 9457 problem responses so every service reports errors the same way. */
+/**
+ * Turns our own business errors and request-validation failures into RFC 9457 problem responses so every
+ * service reports them the same way.
+ *
+ * <p>Deliberately there is no catch-all {@code Exception} handler: it would swallow Spring's own handling of
+ * 404, 405, malformed JSON and Spring Security's 401/403 and turn them all into 500s.
+ */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
-
-	private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
 	@ExceptionHandler(ApiException.class)
 	public ProblemDetail handleApi(ApiException ex) {
@@ -32,15 +34,6 @@ public class GlobalExceptionHandler {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Request validation failed");
 		problem.setProperty("code", "VALIDATION_FAILED");
 		problem.setProperty("fields", fields);
-		return problem;
-	}
-
-	@ExceptionHandler(Exception.class)
-	public ProblemDetail handleUnexpected(Exception ex) {
-		log.error("Unhandled exception", ex);
-		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR,
-				"Unexpected error");
-		problem.setProperty("code", "INTERNAL_ERROR");
 		return problem;
 	}
 }

@@ -9,7 +9,7 @@
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
 ![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
 
-> **Project status:** in active development (12-day solo build). Day 1 is done: the 9 services are scaffolded, the shared `common` library exists, and the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** in active development (12-day solo build). Days 1 and 2 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, and **login, JWT security and the API gateway work end to end**. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -357,6 +357,57 @@ What step 1 gives you:
 
 To stop everything: `docker compose -f infra/docker-compose.yml down` (add `-v` to also wipe the data).
 
+### What you can try today (Days 1 and 2)
+
+Start the infrastructure (above), install the shared library once, then run the two services in separate terminals:
+
+```bash
+./mvnw -q -pl common install
+```
+
+```bash
+cd services/auth-service && ./mvnw spring-boot:run
+```
+
+```bash
+cd services/api-gateway && ./mvnw spring-boot:run
+```
+
+Everything goes through the gateway on `http://localhost:8080`. The gateway strips `/api`, so `/api/auth/login` reaches the auth service as `/auth/login`.
+
+| Request (via the gateway) | Who can call it | What it does |
+|---|---|---|
+| `POST /api/auth/register` | anyone | Creates a `CUSTOMER` account (KYC starts as `PENDING`) |
+| `POST /api/auth/login` | anyone | Returns a 15-minute access token and a 7-day refresh token |
+| `POST /api/auth/refresh` | anyone with a refresh token | Swaps it for a new pair; the old refresh token dies |
+| `POST /api/auth/logout` | anyone with a refresh token | Revokes that refresh token |
+| `GET /api/auth/me` | any signed-in user | Returns your profile |
+
+Two demo accounts are created on first start (local development only, switch off with `SEED_DEMO_USERS=false`):
+`customer@sentinelbank.dev` and `analyst@sentinelbank.dev`, both with the password `Demo#12345` (override with `SEED_PASSWORD`).
+
+```bash
+curl -s -X POST http://localhost:8080/api/auth/login -H 'Content-Type: application/json' -d '{"email":"customer@sentinelbank.dev","password":"Demo#12345"}'
+```
+
+Who may reach which path is decided in one place, the gateway:
+
+| Path | Access |
+|---|---|
+| `/api/auth/register`, `login`, `refresh`, `logout`, `/actuator/health` | public |
+| `/api/fraud/**` | `ANALYST` only |
+| `/api/transfers/**`, `/api/ai/**` | `CUSTOMER` only |
+| everything else | any signed-in user |
+
+Security details worth knowing:
+
+- **Passwords** are stored as BCrypt hashes. **Refresh tokens** are random and single-use; only their SHA-256 hash is stored. Presenting an already-used refresh token is treated as theft and revokes every session of that user.
+- **Identity for services:** after checking the JWT, the gateway passes the caller on as `X-User-Id`, `X-User-Email` and `X-User-Roles` headers, and first deletes any such headers the client tried to send.
+- **Rate limits:** 10 login/register/refresh calls per minute per IP, and 120 requests per minute per signed-in user. Over the limit you get `429` with a `Retry-After` header.
+- **Failures:** a service that is down gives `503` and a slow one gives `504`, instead of a generic `500`.
+- **Tracing:** one `X-Correlation-Id` is created (or kept) at the gateway and appears in the logs of every service the request touches.
+- Both services must share the same `JWT_SECRET`. The built-in default is for local development only.
+
 ### Demo script (planned, Day 12)
 1. Register and log in.
 2. Make a transfer, then check that balances changed, an audit event exists and a notification was sent.
@@ -386,7 +437,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 | Day | Focus | Status |
 |---|---|---|
 | 1 | Foundation: repo layout, the 9 service skeletons, infra compose file, `common` module | ✅ done |
-| 2 | Auth service and gateway (JWT, routing, rate limit) | ⬜ |
+| 2 | Auth service and gateway (JWT, routing, rate limit) | ✅ done |
 | 3 | Account service (ledger, optimistic locking, idempotent debit/credit) | ⬜ |
 | 4 | Transaction service (transfer API, idempotency, saga state, outbox) | ⬜ |
 | 5 | Outbox publisher and Kafka topics | ⬜ |
