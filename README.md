@@ -9,7 +9,7 @@
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
 ![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
 
-> **Project status:** in active development (12-day solo build). Days 1-3 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, and the **account ledger enforces optimistic locking and idempotency under real concurrency**. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** in active development (12-day solo build). Days 1-4 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, and **transfers debit an account and write a transactional outbox row atomically**, with Resilience4j protecting the call between them. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -176,7 +176,7 @@ sequenceDiagram
     T->>A: debit account, idempotent by transactionId
     A-->>T: debited
     T->>T: set DEBITED and write outbox row in one DB transaction
-    T-->>C: 202 Accepted with transferId, status PENDING
+    T-->>C: 201 Created with transferId, status DEBITED
     T->>K: outbox publisher sends transfer.initiated, key is accountId
     K->>P: transfer.initiated
     K->>F: transfer.initiated
@@ -357,9 +357,9 @@ What step 1 gives you:
 
 To stop everything: `docker compose -f infra/docker-compose.yml down` (add `-v` to also wipe the data).
 
-### What you can try today (Days 1-3)
+### What you can try today (Days 1-4)
 
-Start the infrastructure (above), install the shared library once, then run three services in separate terminals:
+Start the infrastructure (above), install the shared library once, then run four services in separate terminals:
 
 ```bash
 ./mvnw -q -pl common install
@@ -371,6 +371,10 @@ cd services/auth-service && ./mvnw spring-boot:run
 
 ```bash
 cd services/account-service && ./mvnw spring-boot:run
+```
+
+```bash
+cd services/transaction-service && ./mvnw spring-boot:run
 ```
 
 ```bash
@@ -414,12 +418,12 @@ Who may reach which path is decided in one place, the gateway:
 
 Balances are a whole number of the smallest currency unit (`balanceMinor`, cents for USD), never a float. Two demo accounts (USD 5,000.00 and USD 10,000.00) are seeded under a fixed placeholder owner id, for trying the ledger with curl or Postman before a real registered customer opens one; disable with `SEED_DEMO_ACCOUNTS=false`.
 
-**Debit and credit are not reachable through the gateway or by any customer.** They live at `POST /internal/accounts/{id}/debit` and `/credit`, directly on the account service's own port (`8082`) — a completely different path from `/accounts/**`, so no gateway route can ever forward to them. Only other services (Transaction, on Day 4) call them, passing:
+**Debit and credit are not reachable through the gateway or by any customer.** They live at `POST /internal/accounts/{id}/debit` and `/credit`, directly on the account service's own port (`8082`) — a completely different path from `/accounts/**`, so no gateway route can ever forward to them. Only transaction-service calls them (below), passing:
 - `referenceId`: the idempotency key. The same debit request repeated any number of times moves money exactly once and returns the same result.
 - `amountMinor`: must be positive.
 
 ```bash
-# what transaction-service will do on Day 4: call account-service directly, not through the gateway
+# this is exactly what transaction-service does: call account-service directly, not through the gateway
 curl -s -X POST http://localhost:8082/internal/accounts/<accountId>/debit \
   -H 'Content-Type: application/json' \
   -d '{"referenceId":"txn-123","amountMinor":2500,"description":"groceries"}'
@@ -428,6 +432,36 @@ curl -s -X POST http://localhost:8082/internal/accounts/<accountId>/debit \
 Two guarantees worth knowing about, both proven by tests running 10-16 threads at once against a real PostgreSQL container:
 - **Optimistic locking** (`@Version`): concurrent debits on the same account never lose an update. The loser of a write race is retried automatically in a fresh transaction, up to 10 times.
 - **Idempotency**: whether a debit is retried sequentially (a client resending after a timeout) or arrives from several threads at the exact same instant (a genuine race), the same `referenceId` results in exactly one ledger entry and one balance change. A debit and its later compensating credit (Day 6's saga reversal) deliberately share one `referenceId`, distinguished only by entry type.
+
+#### Transfers (Day 4)
+
+| Request (via the gateway) | Who can call it | What it does |
+|---|---|---|
+| `POST /api/transfers` | `CUSTOMER` only, needs an `Idempotency-Key` header | Debits `fromAccountId` and creates a transfer. Returns `201` for a new transfer, `200` if the same idempotency key was already used |
+| `GET /api/transfers` | any signed-in user | Lists your own transfers |
+| `GET /api/transfers/{id}` | owner, or an `ANALYST` | The transfer's current status and, if it failed, why |
+
+```bash
+curl -s -X POST http://localhost:8080/api/transfers \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: a-client-generated-uuid' \
+  -d '{"fromAccountId":"<accountId>","toAccountId":"PARTNER-ACC-1","amountMinor":2500}'
+```
+
+What happens, in order, on every `POST /transfers` — this is the sequence diagram above, now actually running:
+1. **Replay check.** An idempotency key already on file returns that transfer unchanged; nothing is debited again. The same key with a *different* request body is rejected with `409 IDEMPOTENCY_KEY_REUSED`, since silently reusing someone's stale key for a new transfer would be a real bug worth surfacing loudly.
+2. **Ownership check.** Transaction-service calls account-service's own `GET /accounts/{id}` directly (not through the gateway), forwarding the caller's identity so account-service's existing ownership rule applies unchanged. An account that doesn't exist or isn't yours: `404`, and no transfer row is created at all — a request that could never succeed leaves no record.
+3. **Debit.** A transfer is written as `PENDING` (its own committed transaction) before this call, so it is durable before anything remote is attempted. The debit itself never holds a database transaction open across the network call.
+4. **Outcome.** Success writes `DEBITED` and an outbox row (below) in one transaction. A business rejection (for example `INSUFFICIENT_FUNDS`) or an unreachable account-service writes `FAILED` with the reason, in its own transaction. Either way, `POST /transfers` returns `201 Created` — a resource was created, whatever its outcome — with the transfer's real status in the body, never a bare HTTP error, so there is always an audit trail of what was attempted.
+
+**The transactional outbox, for real.** The row that eventually becomes a `transfer.initiated` Kafka message (Day 5) is written to `transaction.outbox_events` in the exact same database transaction that flips the transfer to `DEBITED` — so a crash between the two is impossible; either both happened or neither did. Check it yourself:
+
+```bash
+docker exec sentinelbank-postgres psql -U sentinel -d sentinelbank \
+  -c "select event_type, payload from transaction.outbox_events where aggregate_id = '<transferId>'"
+```
+
+**Retrying the debit call is safe**, specifically because it targets an idempotent endpoint (Day 3): a `5xx` from account-service is retried automatically (Resilience4j, 3 attempts) and, if it keeps happening, the circuit breaker opens so requests fail fast instead of piling onto a struggling service — but a `4xx` business rejection (insufficient funds, account not found) is never retried, since retrying a permanent rejection would only waste time and could trip the breaker on ordinary customer traffic.
 
 Security details worth knowing:
 
@@ -469,7 +503,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 | 1 | Foundation: repo layout, the 9 service skeletons, infra compose file, `common` module | ✅ done |
 | 2 | Auth service and gateway (JWT, routing, rate limit) | ✅ done |
 | 3 | Account service (ledger, optimistic locking, idempotent debit/credit) | ✅ done |
-| 4 | Transaction service (transfer API, idempotency, saga state, outbox) | ⬜ |
+| 4 | Transaction service (transfer API, idempotency, saga state, outbox) | ✅ done |
 | 5 | Outbox publisher and Kafka topics | ⬜ |
 | 6 | Partner Bank, saga completion, compensation, retry and DLT | ⬜ |
 | 7 | Fraud service (rules, cases) | ⬜ |

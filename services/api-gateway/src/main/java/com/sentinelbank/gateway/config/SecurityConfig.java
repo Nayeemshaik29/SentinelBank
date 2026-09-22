@@ -64,7 +64,12 @@ class SecurityConfig {
 						.permitAll()
 						.pathMatchers("/actuator/health/**", "/actuator/info").permitAll()
 						.pathMatchers("/api/fraud/**").hasRole("ANALYST")
-						.pathMatchers("/api/transfers/**", "/api/ai/**").hasRole("CUSTOMER")
+						.pathMatchers("/api/ai/**").hasRole("CUSTOMER")
+						// Only a customer moves money, but an analyst can read any transfer for fraud
+						// investigation (transaction-service already allows that at the application level) —
+						// so only the write is customer-only; reads are open to either role.
+						.pathMatchers(HttpMethod.POST, "/api/transfers/**").hasRole("CUSTOMER")
+						.pathMatchers(HttpMethod.GET, "/api/transfers/**").hasAnyRole("CUSTOMER", "ANALYST")
 						.anyExchange().authenticated())
 				.exceptionHandling(handling -> handling
 						.authenticationEntryPoint(unauthorized)

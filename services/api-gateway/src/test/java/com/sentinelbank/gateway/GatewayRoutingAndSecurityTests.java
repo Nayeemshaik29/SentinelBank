@@ -132,6 +132,17 @@ class GatewayRoutingAndSecurityTests {
 	}
 
 	@Test
+	void anAnalystCanReadTransfersButNotCreateThem() {
+		String analyst = TestTokens.token("a-1", "a@example.com", List.of("ANALYST"));
+
+		client.get().uri("/api/transfers/123").header(HttpHeaders.AUTHORIZATION, "Bearer " + analyst).exchange()
+				.expectStatus().isOk()
+				.expectBody().jsonPath("$.path").isEqualTo("/transfers/123");
+		client.post().uri("/api/transfers").header(HttpHeaders.AUTHORIZATION, "Bearer " + analyst)
+				.bodyValue("{}").exchange().expectStatus().isForbidden();
+	}
+
+	@Test
 	void expiredForgedAndGarbageTokensAreAllRejected() {
 		String expired = TestTokens.token("u", "u@example.com", List.of("CUSTOMER"), Duration.ofHours(-1),
 				TestTokens.SECRET);
