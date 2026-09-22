@@ -15,6 +15,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.web.method.HandlerMethod;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -69,5 +71,18 @@ class CommonModuleTests {
 	void topicHelpersBuildRetryAndDeadLetterNames() {
 		assertThat(Topics.retry(Topics.TRANSFER_FAILED)).isEqualTo("transfer.failed.retry");
 		assertThat(Topics.dlt(Topics.TRANSFER_FAILED)).isEqualTo("transfer.failed.dlt");
+	}
+
+	@Test
+	void missingRequiredHeaderBecomesAClearValidationProblem() throws NoSuchMethodException {
+		var parameter = new org.springframework.core.MethodParameter(
+				HandlerMethod.class.getDeclaredMethod("hashCode"), -1);
+		MissingRequestHeaderException ex = new MissingRequestHeaderException("Idempotency-Key", parameter);
+
+		ProblemDetail problem = new GlobalExceptionHandler().handleMissingHeader(ex);
+
+		assertThat(problem.getStatus()).isEqualTo(400);
+		assertThat(problem.getDetail()).contains("Idempotency-Key");
+		assertThat(problem.getProperties()).containsEntry("code", "VALIDATION_FAILED");
 	}
 }

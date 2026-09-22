@@ -5,6 +5,7 @@ import java.util.Map;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -34,6 +35,14 @@ public class GlobalExceptionHandler {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Request validation failed");
 		problem.setProperty("code", "VALIDATION_FAILED");
 		problem.setProperty("fields", fields);
+		return problem;
+	}
+
+	@ExceptionHandler(MissingRequestHeaderException.class)
+	public ProblemDetail handleMissingHeader(MissingRequestHeaderException ex) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
+				"Missing required header: " + ex.getHeaderName());
+		problem.setProperty("code", "VALIDATION_FAILED");
 		return problem;
 	}
 }
