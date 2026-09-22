@@ -3,6 +3,8 @@ package com.sentinelbank.gateway.filter;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import com.sentinelbank.common.web.IdentityHeaders;
+
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -25,11 +27,13 @@ import reactor.core.publisher.Mono;
 @Component
 public class IdentityHeadersGlobalFilter implements GlobalFilter, Ordered {
 
-	public static final String USER_ID = "X-User-Id";
+	// Re-exported from common so RateLimitGlobalFilter (and every downstream service) uses the exact
+	// same header names, with a single place to change them.
+	public static final String USER_ID = IdentityHeaders.USER_ID;
 
-	public static final String USER_EMAIL = "X-User-Email";
+	public static final String USER_EMAIL = IdentityHeaders.USER_EMAIL;
 
-	public static final String USER_ROLES = "X-User-Roles";
+	public static final String USER_ROLES = IdentityHeaders.USER_ROLES;
 
 	@Override
 	public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
