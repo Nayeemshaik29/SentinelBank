@@ -1,3 +1,59 @@
+server:
+  port: 8083
+
 spring:
   application:
     name: transaction-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:sentinelbank}?currentSchema=transaction
+    username: ${DB_USER:sentinel}
+    password: ${DB_PASSWORD:sentinel}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate   # Flyway owns the schema; Hibernate only checks that it matches
+    properties:
+      hibernate.default_schema: transaction
+  flyway:
+    schemas: transaction
+    default-schema: transaction
+    create-schemas: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{correlationId:-}]"
+
+sentinelbank:
+  services:
+    account-url: ${ACCOUNT_SERVICE_URL:http://localhost:8082}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      account-service:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        # A business rejection (insufficient funds, account not found, validation) is normal traffic,
+        # not account-service being unhealthy, so it must never trip the breaker.
+        ignore-exceptions:
+          - org.springframework.web.client.HttpClientErrorException
+  retry:
+    instances:
+      account-service:
+        max-attempts: 3
+        wait-duration: 200ms
+        # Safe to retry: the debit call is idempotent by transactionId (Day 3), so a retried debit after a
+        # lost response never double-charges. Never retry a 4xx: it is a permanent business rejection that
+        # would fail again identically.
+        ignore-exceptions:
+          - org.springframework.web.client.HttpClientErrorException

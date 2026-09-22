@@ -1,0 +1,87 @@
+package com.sentinelbank.transaction.domain;
+
+import java.util.UUID;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sentinelbank.common.event.Topics;
+
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * The three atomic steps of a transfer, each its own database transaction, matching the sequence diagram
+ * in the README exactly: PENDING is written and committed before the account-service call happens, and the
+ * result of that call is recorded in a separate transaction afterwards. No transaction spans the network
+ * call itself, so a slow or hung downstream service never holds a database connection open.
+ *
+ * <p>These methods are called from {@link com.sentinelbank.transaction.service.TransferService}, a
+ * different Spring bean, deliberately: {@code @Transactional} is applied by a proxy around this bean, and
+ * that proxy is only invoked on calls that arrive from outside the bean (the same reason
+ * {@code LedgerOperations} is a separate bean from {@code AccountService} in account-service).
+ */
+@Service
+public class TransferWriteOperations {
+
+	private final TransferRepository transfers;
+
+	private final OutboxEventRepository outboxEvents;
+
+	private final ObjectMapper objectMapper;
+
+	TransferWriteOperations(TransferRepository transfers, OutboxEventRepository outboxEvents,
+			ObjectMapper objectMapper) {
+		this.transfers = transfers;
+		this.outboxEvents = outboxEvents;
+		this.objectMapper = objectMapper;
+	}
+
+	/**
+	 * Creates the transfer as PENDING. If a concurrent request for the same idempotency key wins the race,
+	 * this returns that other request's row instead of failing: the unique constraint on
+	 * {@code idempotency_key} is the safety net, exactly like the ledger's reference-id constraint in
+	 * account-service.
+	 */
+	@Transactional
+	public Transfer createPending(UUID ownerId, UUID fromAccountId, String toAccountId, String currency,
+			long amountMinor, String idempotencyKey, String requestHash) {
+		try {
+			return transfers.saveAndFlush(
+					new Transfer(idempotencyKey, requestHash, ownerId, fromAccountId, toAccountId, currency,
+							amountMinor));
+		}
+		catch (DataIntegrityViolationException ex) {
+			return transfers.findByIdempotencyKey(idempotencyKey).orElseThrow(() -> ex);
+		}
+	}
+
+	/** Records a successful debit and, in the same transaction, enqueues the event for it to be published. */
+	@Transactional
+	public Transfer markDebitedAndEnqueueEvent(UUID transferId, String correlationId) {
+		Transfer transfer = transfers.findById(transferId).orElseThrow();
+		transfer.markDebited();
+		outboxEvents.save(new OutboxEvent(transfer.getId(), Topics.TRANSFER_INITIATED,
+				toJson(new TransferInitiatedPayload(transfer.getId(), transfer.getFromAccountId(),
+						transfer.getToAccountId(), transfer.getAmountMinor(), transfer.getCurrency())),
+				correlationId));
+		return transfer;
+	}
+
+	/** Records why the debit did not happen. No outbox event: nothing occurred that other services need to know. */
+	@Transactional
+	public Transfer markFailed(UUID transferId, String failureCode, String failureDetail) {
+		Transfer transfer = transfers.findById(transferId).orElseThrow();
+		transfer.markFailed(failureCode, failureDetail);
+		return transfer;
+	}
+
+	private String toJson(Object payload) {
+		try {
+			return objectMapper.writeValueAsString(payload);
+		}
+		catch (JsonProcessingException ex) {
+			throw new IllegalStateException("Failed to serialize outbox payload", ex);
+		}
+	}
+}
