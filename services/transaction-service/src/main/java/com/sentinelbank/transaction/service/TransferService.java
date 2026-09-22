@@ -9,9 +9,9 @@ import com.sentinelbank.transaction.client.AccountView;
 import com.sentinelbank.transaction.domain.RequestHashes;
 import com.sentinelbank.transaction.domain.Transfer;
 import com.sentinelbank.transaction.domain.TransferRepository;
-import com.sentinelbank.transaction.domain.TransferStatus;
 import com.sentinelbank.transaction.domain.TransferWriteOperations;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -63,12 +63,18 @@ public class TransferService {
 
 		AccountView account = fetchAccount(command.fromAccountId(), ownerId);
 
-		Transfer pending = writeOperations.createPending(ownerId, command.fromAccountId(), command.toAccountId(),
-				account.currency(), command.amountMinor(), idempotencyKey, requestHash);
-		if (pending.getStatus() != TransferStatus.PENDING) {
-			// Lost the create race to a concurrent request using the same idempotency key; that request's
-			// result is authoritative, and we must not attempt a second debit.
-			return new TransferOutcome(pending, false);
+		Transfer pending;
+		try {
+			pending = writeOperations.createPending(ownerId, command.fromAccountId(), command.toAccountId(),
+					account.currency(), command.amountMinor(), idempotencyKey, requestHash);
+		}
+		catch (DataIntegrityViolationException ex) {
+			// Lost the create race to a concurrent request using the same idempotency key. Its result is
+			// authoritative: look it up fresh (createPending's own transaction already rolled back) rather
+			// than attempting a second debit.
+			Transfer winner = transfers.findByIdempotencyKey(idempotencyKey).orElseThrow(() -> ex);
+			requireSameRequest(winner, requestHash);
+			return new TransferOutcome(winner, false);
 		}
 
 		try {
