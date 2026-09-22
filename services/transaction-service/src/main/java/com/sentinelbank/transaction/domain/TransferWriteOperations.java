@@ -39,21 +39,22 @@ public class TransferWriteOperations {
 
 	/**
 	 * Creates the transfer as PENDING. If a concurrent request for the same idempotency key wins the race,
-	 * this returns that other request's row instead of failing: the unique constraint on
-	 * {@code idempotency_key} is the safety net, exactly like the ledger's reference-id constraint in
-	 * account-service.
+	 * the unique constraint on {@code idempotency_key} makes this throw {@link DataIntegrityViolationException}
+	 * instead of silently succeeding twice.
+	 *
+	 * <p>That exception is deliberately left to propagate rather than caught here: once PostgreSQL rejects
+	 * one statement, it marks the whole transaction aborted and refuses every further statement (including
+	 * a "let me just look up the existing row instead" query) until an actual rollback happens. Only
+	 * letting the exception out of this {@code @Transactional} method triggers that rollback; the caller —
+	 * {@link com.sentinelbank.transaction.service.TransferService}, a different bean — then looks the row
+	 * up in its own, fresh transaction.
 	 */
 	@Transactional
 	public Transfer createPending(UUID ownerId, UUID fromAccountId, String toAccountId, String currency,
 			long amountMinor, String idempotencyKey, String requestHash) {
-		try {
-			return transfers.saveAndFlush(
-					new Transfer(idempotencyKey, requestHash, ownerId, fromAccountId, toAccountId, currency,
-							amountMinor));
-		}
-		catch (DataIntegrityViolationException ex) {
-			return transfers.findByIdempotencyKey(idempotencyKey).orElseThrow(() -> ex);
-		}
+		return transfers.saveAndFlush(
+				new Transfer(idempotencyKey, requestHash, ownerId, fromAccountId, toAccountId, currency,
+						amountMinor));
 	}
 
 	/** Records a successful debit and, in the same transaction, enqueues the event for it to be published. */

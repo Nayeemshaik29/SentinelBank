@@ -38,7 +38,12 @@ final class StubAccountService implements AutoCloseable {
 
 	private volatile DebitBehavior debitBehavior = DebitBehavior.SUCCEED;
 
-	private final AtomicInteger debitCallCount = new AtomicInteger();
+	// The stub server is shared by every test in the class (Spring reuses one context, so the
+	// account-url property is fixed once), so call counts are tracked per referenceId — always the
+	// transfer id, unique per test — rather than as one number every test would otherwise fight over.
+	private final AtomicInteger totalDebitCalls = new AtomicInteger();
+
+	private final Map<String, AtomicInteger> debitCallsByReference = new ConcurrentHashMap<>();
 
 	StubAccountService() {
 		try {
@@ -64,8 +69,14 @@ final class StubAccountService implements AutoCloseable {
 		this.debitBehavior = behavior;
 	}
 
-	int debitCallCount() {
-		return debitCallCount.get();
+	/** Total debit calls since this stub was created; only meaningful as a before/after delta in a test. */
+	int totalDebitCalls() {
+		return totalDebitCalls.get();
+	}
+
+	int debitCallsFor(String referenceId) {
+		AtomicInteger counter = debitCallsByReference.get(referenceId);
+		return counter == null ? 0 : counter.get();
 	}
 
 	private void handleGetAccount(HttpExchange exchange) throws IOException {
@@ -86,9 +97,10 @@ final class StubAccountService implements AutoCloseable {
 	}
 
 	private void handleDebit(HttpExchange exchange) throws IOException {
-		debitCallCount.incrementAndGet();
+		totalDebitCalls.incrementAndGet();
 		Map<?, ?> request = mapper.readValue(exchange.getRequestBody(), Map.class);
 		String referenceId = String.valueOf(request.get("referenceId"));
+		debitCallsByReference.computeIfAbsent(referenceId, key -> new AtomicInteger()).incrementAndGet();
 		switch (debitBehavior) {
 			case INSUFFICIENT_FUNDS ->
 				sendJson(exchange, 409, Map.of("code", "INSUFFICIENT_FUNDS", "detail", "Insufficient funds"));

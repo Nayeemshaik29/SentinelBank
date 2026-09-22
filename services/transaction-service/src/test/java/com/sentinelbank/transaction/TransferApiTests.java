@@ -84,7 +84,8 @@ class TransferApiTests {
 		String body = result.getResponse().getContentAsString();
 		assertThat((String) JsonPath.read(body, "$.status")).isEqualTo("DEBITED");
 		assertThat((String) JsonPath.read(body, "$.currency")).isEqualTo("USD");
-		assertThat(stubAccountService.debitCallCount()).isEqualTo(1);
+		String transferId = JsonPath.read(body, "$.id");
+		assertThat(stubAccountService.debitCallsFor(transferId)).isEqualTo(1);
 	}
 
 	@Test
@@ -100,7 +101,7 @@ class TransferApiTests {
 		String firstId = JsonPath.read(first.getResponse().getContentAsString(), "$.id");
 		String secondId = JsonPath.read(second.getResponse().getContentAsString(), "$.id");
 		assertThat(secondId).isEqualTo(firstId);
-		assertThat(stubAccountService.debitCallCount()).as("the debit only ever happened once").isEqualTo(1);
+		assertThat(stubAccountService.debitCallsFor(firstId)).as("the debit only ever happened once").isEqualTo(1);
 	}
 
 	@Test
@@ -131,25 +132,29 @@ class TransferApiTests {
 	void aNonPositiveAmountIsRejectedByValidation() throws Exception {
 		String ownerId = UUID.randomUUID().toString();
 		UUID fromAccountId = registerAccount(ownerId);
+		int callsBefore = stubAccountService.totalDebitCalls();
 
 		mvc.perform(post("/transfers").header("X-User-Id", ownerId).header("Idempotency-Key", "key-zero")
 				.contentType(MediaType.APPLICATION_JSON)
 				.content("{\"fromAccountId\":\"" + fromAccountId + "\",\"toAccountId\":\"X\",\"amountMinor\":0}"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
-		assertThat(stubAccountService.debitCallCount()).isZero();
+		assertThat(stubAccountService.totalDebitCalls()).as("invalid requests never reach account-service")
+				.isEqualTo(callsBefore);
 	}
 
 	@Test
 	void anUnknownOrNotOwnedAccountIsRejectedBeforeAnyTransferIsCreated() throws Exception {
 		String ownerId = UUID.randomUUID().toString();
+		int callsBefore = stubAccountService.totalDebitCalls();
 
 		MvcResult result = postTransfer(ownerId, "key-unknown", UUID.randomUUID(), "PARTNER-ACC-1", 100L);
 
 		assertThat(result.getResponse().getStatus()).isEqualTo(404);
 		assertThat((String) JsonPath.read(result.getResponse().getContentAsString(), "$.code"))
 				.isEqualTo("ACCOUNT_NOT_FOUND");
-		assertThat(stubAccountService.debitCallCount()).isZero();
+		assertThat(stubAccountService.totalDebitCalls()).as("nothing was ever debited for an unowned account")
+				.isEqualTo(callsBefore);
 		mvc.perform(get("/transfers").header("X-User-Id", ownerId)).andExpect(jsonPath("$.length()").value(0));
 	}
 
@@ -185,8 +190,9 @@ class TransferApiTests {
 		String body = result.getResponse().getContentAsString();
 		assertThat((String) JsonPath.read(body, "$.status")).isEqualTo("FAILED");
 		assertThat((String) JsonPath.read(body, "$.failureCode")).isEqualTo("ACCOUNT_SERVICE_UNAVAILABLE");
-		assertThat(stubAccountService.debitCallCount()).as("a 5xx is retried (max-attempts: 3 in application.yaml)")
-				.isEqualTo(3);
+		String transferId = JsonPath.read(body, "$.id");
+		assertThat(stubAccountService.debitCallsFor(transferId))
+				.as("a 5xx is retried (max-attempts: 3 in application.yaml)").isEqualTo(3);
 	}
 
 	@Test
@@ -211,21 +217,26 @@ class TransferApiTests {
 		int callers = 12;
 		CyclicBarrier barrier = new CyclicBarrier(callers);
 		ExecutorService pool = Executors.newFixedThreadPool(callers);
+		java.util.List<String> transferIds;
 		try {
-			var futures = IntStream.range(0, callers).<Callable<Integer>>mapToObj(i -> () -> {
+			var futures = IntStream.range(0, callers).<Callable<String>>mapToObj(i -> () -> {
 				barrier.await();
-				return postTransfer(ownerId, "key-concurrent", fromAccountId, "PARTNER-ACC-1", 500L)
-						.getResponse().getStatus();
+				MvcResult result = postTransfer(ownerId, "key-concurrent", fromAccountId, "PARTNER-ACC-1", 500L);
+				assertThat(result.getResponse().getStatus()).isIn(200, 201);
+				return (String) JsonPath.read(result.getResponse().getContentAsString(), "$.id");
 			}).map(pool::submit).toList();
-			for (Future<Integer> future : futures) {
-				assertThat(future.get(30, TimeUnit.SECONDS)).isIn(200, 201);
+			transferIds = new java.util.ArrayList<>();
+			for (Future<String> future : futures) {
+				transferIds.add(future.get(30, TimeUnit.SECONDS));
 			}
 		}
 		finally {
 			pool.shutdown();
 		}
 
-		assertThat(stubAccountService.debitCallCount())
+		assertThat(transferIds).as("every concurrent caller was handed the same transfer").containsOnly(
+				transferIds.get(0));
+		assertThat(stubAccountService.debitCallsFor(transferIds.get(0)))
 				.as("%d simultaneous callers using the same idempotency key still debit once", callers)
 				.isEqualTo(1);
 	}
