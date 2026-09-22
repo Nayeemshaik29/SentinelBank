@@ -9,7 +9,7 @@
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
 ![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
 
-> **Project status:** in active development (12-day solo build). Days 1-4 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, and **transfers debit an account and write a transactional outbox row atomically**, with Resilience4j protecting the call between them. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** in active development (12-day solo build). Days 1-5 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, with Resilience4j protecting the call between them, and a **poller reliably publishes those rows to Kafka**, keyed by account id and safe to retry after a crash. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -357,7 +357,7 @@ What step 1 gives you:
 
 To stop everything: `docker compose -f infra/docker-compose.yml down` (add `-v` to also wipe the data).
 
-### What you can try today (Days 1-4)
+### What you can try today (Days 1-5)
 
 Start the infrastructure (above), install the shared library once, then run four services in separate terminals:
 
@@ -454,14 +454,35 @@ What happens, in order, on every `POST /transfers` — this is the sequence diag
 3. **Debit.** A transfer is written as `PENDING` (its own committed transaction) before this call, so it is durable before anything remote is attempted. The debit itself never holds a database transaction open across the network call.
 4. **Outcome.** Success writes `DEBITED` and an outbox row (below) in one transaction. A business rejection (for example `INSUFFICIENT_FUNDS`) or an unreachable account-service writes `FAILED` with the reason, in its own transaction. Either way, `POST /transfers` returns `201 Created` — a resource was created, whatever its outcome — with the transfer's real status in the body, never a bare HTTP error, so there is always an audit trail of what was attempted.
 
-**The transactional outbox, for real.** The row that eventually becomes a `transfer.initiated` Kafka message (Day 5) is written to `transaction.outbox_events` in the exact same database transaction that flips the transfer to `DEBITED` — so a crash between the two is impossible; either both happened or neither did. Check it yourself:
+**The transactional outbox, for real.** The row that becomes a `transfer.initiated` Kafka message is written to `transaction.outbox_events` in the exact same database transaction that flips the transfer to `DEBITED` — so a crash between the two is impossible; either both happened or neither did. Check it yourself:
 
 ```bash
 docker exec sentinelbank-postgres psql -U sentinel -d sentinelbank \
-  -c "select event_type, payload from transaction.outbox_events where aggregate_id = '<transferId>'"
+  -c "select event_type, payload, published_at from transaction.outbox_events where aggregate_id = '<transferId>'"
 ```
 
 **Retrying the debit call is safe**, specifically because it targets an idempotent endpoint (Day 3): a `5xx` from account-service is retried automatically (Resilience4j, 3 attempts) and, if it keeps happening, the circuit breaker opens so requests fail fast instead of piling onto a struggling service — but a `4xx` business rejection (insufficient funds, account not found) is never retried, since retrying a permanent rejection would only waste time and could trip the breaker on ordinary customer traffic.
+
+#### The outbox publisher (Day 5)
+
+A separate poller (`OutboxPublisher`, `@Scheduled` every 500ms) is what actually turns an outbox row into a Kafka message — deliberately decoupled from the request that created it, so a Kafka outage never blocks a transfer from being accepted. The `POST /transfers` response above already returns before this runs; the row just waits in the table until the next poll.
+
+```bash
+# watch the real event arrive on the real topic
+docker exec sentinelbank-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic transfer.initiated --from-beginning --property print.key=true
+```
+
+```json
+{"eventId":"a769ecea-...","type":"transfer.initiated","aggregateId":"2f2609c5-...",
+ "occurredAt":"2026-09-22T06:47:05.691Z","correlationId":"77f41ebf-...",
+ "payload":{"transferId":"2f2609c5-...","fromAccountId":"3a89191e-...","toAccountId":"PARTNER-2","amountMinor":750,"currency":"USD"}}
+```
+
+Three things worth knowing:
+- **The Kafka message key is the account id** (`fromAccountId`), decided by `transaction-service` when it writes the outbox row, not derived by the publisher. This is what the README's architecture diagram means by "key = accountId": every event for one account lands on the same partition, so a fraud rule or a balance projection that reads them in order always sees them in the order they really happened, while different accounts still process in parallel across partitions.
+- **The event id is the outbox row's own id**, not a fresh one minted at publish time. If the process crashes after Kafka has the message but before the row is marked published, the next poll resends it with the exact same `eventId` — a downstream idempotent consumer (Day 6 onward, the same pattern account-service already uses for debits) recognizes and skips the duplicate instead of double-processing it.
+- **A poll cycle never republishes an already-published row** and never lets one bad row block the others in the same batch — each send is independent, and a failure is simply left for the next cycle to retry.
 
 Security details worth knowing:
 
@@ -504,7 +525,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 | 2 | Auth service and gateway (JWT, routing, rate limit) | ✅ done |
 | 3 | Account service (ledger, optimistic locking, idempotent debit/credit) | ✅ done |
 | 4 | Transaction service (transfer API, idempotency, saga state, outbox) | ✅ done |
-| 5 | Outbox publisher and Kafka topics | ⬜ |
+| 5 | Outbox publisher and Kafka topics | ✅ done |
 | 6 | Partner Bank, saga completion, compensation, retry and DLT | ⬜ |
 | 7 | Fraud service (rules, cases) | ⬜ |
 | 8 | Notification and Audit services | ⬜ |

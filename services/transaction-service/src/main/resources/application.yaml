@@ -26,6 +26,8 @@ spring:
       acks: all               # wait for every in-sync replica before considering the send successful
       properties:
         enable.idempotence: true   # the Kafka producer's own retries never create a duplicate on the broker
+        request.timeout.ms: 5000
+        # Kafka requires delivery.timeout.ms >= linger.ms (default 0) + request.timeout.ms.
         delivery.timeout.ms: 10000
 
 management:
