@@ -88,6 +88,35 @@ public class Transfer {
 		this.updatedAt = Instant.now();
 	}
 
+	/**
+	 * Returns true if this actually moved DEBITED -&gt; COMPLETED, false if it was already past DEBITED — a
+	 * redelivered {@code transfer.completed} event (Kafka's at-least-once delivery), safely ignored rather
+	 * than re-applied.
+	 */
+	public boolean markCompleted() {
+		if (status != TransferStatus.DEBITED) {
+			return false;
+		}
+		this.status = TransferStatus.COMPLETED;
+		this.updatedAt = Instant.now();
+		return true;
+	}
+
+	/** Same idempotency guard as {@link #markCompleted()}, for the start of the saga's undo. */
+	public boolean startCompensating() {
+		if (status != TransferStatus.DEBITED) {
+			return false;
+		}
+		this.status = TransferStatus.COMPENSATING;
+		this.updatedAt = Instant.now();
+		return true;
+	}
+
+	public void markReversed() {
+		this.status = TransferStatus.REVERSED;
+		this.updatedAt = Instant.now();
+	}
+
 	public UUID getId() {
 		return id;
 	}

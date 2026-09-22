@@ -1,3 +1,62 @@
+server:
+  port: 8084
+
 spring:
   application:
     name: partner-bank-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:sentinelbank}?currentSchema=partner_bank
+    username: ${DB_USER:sentinel}
+    password: ${DB_PASSWORD:sentinel}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate   # Flyway owns the schema; Hibernate only checks that it matches
+    properties:
+      hibernate.default_schema: partner_bank
+  flyway:
+    schemas: partner_bank
+    default-schema: partner_bank
+    create-schemas: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
+    consumer:
+      group-id: partner-bank-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      enable-auto-commit: false   # the record is only acknowledged after our own transaction commits
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{correlationId:-}]"
+
+sentinelbank:
+  outbox:
+    poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:500}
+    send-timeout: 5s
+  partner-bank:
+    # A demo/test switch: any transfer whose toAccountId starts with this prefix is rejected by the mock
+    # partner bank, so the compensation (saga-undo) path can be exercised on command instead of by chance.
+    failure-trigger-prefix: ${PARTNER_BANK_FAILURE_PREFIX:FAIL-}
+  kafka:
+    retry:
+      max-attempts: 3
+      backoff-ms: 500
+    retry-topic:
+      max-attempts: 3
+      backoff-ms: 3000

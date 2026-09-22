@@ -15,9 +15,9 @@ import com.sun.net.httpserver.HttpServer;
 
 /**
  * A tiny fake account-service. It answers GET /accounts/{id} from a small set of fixtures added by the
- * test, and POST /internal/accounts/{id}/debit according to a switchable behaviour, so a test can drive
- * exactly the scenario it wants (success, insufficient funds, or account-service itself erroring) without
- * needing a second full Spring context.
+ * test, POST /internal/accounts/{id}/debit according to a switchable behaviour (success, insufficient
+ * funds, or account-service itself erroring), and POST /internal/accounts/{id}/credit (always succeeding,
+ * used for the saga's compensation) — all without needing a second full Spring context.
  */
 final class StubAccountService implements AutoCloseable {
 
@@ -45,6 +45,10 @@ final class StubAccountService implements AutoCloseable {
 
 	private final Map<String, AtomicInteger> debitCallsByReference = new ConcurrentHashMap<>();
 
+	private final AtomicInteger totalCreditCalls = new AtomicInteger();
+
+	private final Map<String, AtomicInteger> creditCallsByReference = new ConcurrentHashMap<>();
+
 	StubAccountService() {
 		try {
 			server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -53,7 +57,7 @@ final class StubAccountService implements AutoCloseable {
 			throw new IllegalStateException(ex);
 		}
 		server.createContext("/accounts/", this::handleGetAccount);
-		server.createContext("/internal/accounts/", this::handleDebit);
+		server.createContext("/internal/accounts/", this::handleDebitOrCredit);
 		server.start();
 	}
 
@@ -79,6 +83,15 @@ final class StubAccountService implements AutoCloseable {
 		return counter == null ? 0 : counter.get();
 	}
 
+	int totalCreditCalls() {
+		return totalCreditCalls.get();
+	}
+
+	int creditCallsFor(String referenceId) {
+		AtomicInteger counter = creditCallsByReference.get(referenceId);
+		return counter == null ? 0 : counter.get();
+	}
+
 	private void handleGetAccount(HttpExchange exchange) throws IOException {
 		UUID accountId = idFromPath(exchange.getRequestURI().getPath(), "/accounts/");
 		AccountFixture fixture = accounts.get(accountId);
@@ -93,6 +106,31 @@ final class StubAccountService implements AutoCloseable {
 		body.put("currency", fixture.currency());
 		body.put("balanceMinor", 1_000_000);
 		body.put("status", "ACTIVE");
+		sendJson(exchange, 200, body);
+	}
+
+	private void handleDebitOrCredit(HttpExchange exchange) throws IOException {
+		if (exchange.getRequestURI().getPath().endsWith("/credit")) {
+			handleCredit(exchange);
+		}
+		else {
+			handleDebit(exchange);
+		}
+	}
+
+	private void handleCredit(HttpExchange exchange) throws IOException {
+		totalCreditCalls.incrementAndGet();
+		Map<?, ?> request = mapper.readValue(exchange.getRequestBody(), Map.class);
+		String referenceId = String.valueOf(request.get("referenceId"));
+		creditCallsByReference.computeIfAbsent(referenceId, key -> new AtomicInteger()).incrementAndGet();
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("id", UUID.randomUUID().toString());
+		body.put("entryType", "CREDIT");
+		body.put("amountMinor", request.get("amountMinor"));
+		body.put("balanceAfter", 0);
+		body.put("referenceId", referenceId);
+		body.put("description", request.get("description"));
+		body.put("createdAt", "2024-01-01T00:00:00Z");
 		sendJson(exchange, 200, body);
 	}
 

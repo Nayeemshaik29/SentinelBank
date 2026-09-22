@@ -77,6 +77,31 @@ public class TransferWriteOperations {
 		return transfer;
 	}
 
+	/** Consuming {@code transfer.completed}: DEBITED -&gt; COMPLETED, or a no-op on redelivery. */
+	@Transactional
+	public Transfer markCompleted(UUID transferId) {
+		Transfer transfer = transfers.findById(transferId).orElseThrow();
+		transfer.markCompleted();
+		return transfer;
+	}
+
+	/** Consuming {@code transfer.failed}, step 1: DEBITED -&gt; COMPENSATING, before the compensating credit
+	 * is attempted. A no-op if this transfer is not (still) DEBITED. */
+	@Transactional
+	public Transfer startCompensating(UUID transferId) {
+		Transfer transfer = transfers.findById(transferId).orElseThrow();
+		transfer.startCompensating();
+		return transfer;
+	}
+
+	/** Consuming {@code transfer.failed}, step 2: after the compensating credit has succeeded. */
+	@Transactional
+	public Transfer markReversed(UUID transferId) {
+		Transfer transfer = transfers.findById(transferId).orElseThrow();
+		transfer.markReversed();
+		return transfer;
+	}
+
 	private String toJson(Object payload) {
 		try {
 			return objectMapper.writeValueAsString(payload);

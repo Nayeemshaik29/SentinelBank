@@ -29,6 +29,12 @@ spring:
         request.timeout.ms: 5000
         # Kafka requires delivery.timeout.ms >= linger.ms (default 0) + request.timeout.ms.
         delivery.timeout.ms: 10000
+    consumer:
+      group-id: transaction-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      enable-auto-commit: false   # the record is only acknowledged after our own processing commits
 
 management:
   endpoints:
@@ -48,6 +54,13 @@ sentinelbank:
     # duration string, so this is kept separate from send-timeout below (which IS bound as a Duration).
     poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:500}
     send-timeout: 5s
+  kafka:
+    retry:
+      max-attempts: 3
+      backoff-ms: 500
+    retry-topic:
+      max-attempts: 3
+      backoff-ms: 3000
 
 resilience4j:
   circuitbreaker:

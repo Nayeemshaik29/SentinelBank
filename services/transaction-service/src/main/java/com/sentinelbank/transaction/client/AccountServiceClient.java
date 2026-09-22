@@ -64,6 +64,23 @@ public class AccountServiceClient {
 	}
 
 	/**
+	 * Used for the saga's compensation (Day 6): refunding a debit after the partner bank rejected the
+	 * transfer. Deliberately reuses the SAME {@code referenceId} (the transferId) as the original debit —
+	 * account-service's ledger allows one debit and one credit to share a reference, distinguished by
+	 * entry type (Day 3) — so this call is just as safe to retry as the debit is.
+	 */
+	@CircuitBreaker(name = "account-service")
+	@Retry(name = "account-service")
+	public void credit(UUID accountId, String referenceId, long amountMinor, String description) {
+		restClient.post()
+				.uri("/internal/accounts/{id}/credit", accountId)
+				.contentType(MediaType.APPLICATION_JSON)
+				.body(new DebitCreditRequestBody(referenceId, amountMinor, description))
+				.retrieve()
+				.toBodilessEntity();
+	}
+
+	/**
 	 * Turns whatever went wrong calling account-service (a business rejection, a timeout, retries
 	 * exhausted, or the circuit sitting open) into the same kind of {@link ApiException} this service
 	 * throws itself, so callers only ever need to catch one exception type.

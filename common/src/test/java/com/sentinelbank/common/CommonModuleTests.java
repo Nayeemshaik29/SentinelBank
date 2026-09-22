@@ -74,6 +74,17 @@ class CommonModuleTests {
 	}
 
 	@Test
+	void baseStripsARetryOrDltSuffixSoADltDestinationIsNeverComputedTwice() {
+		// This is exactly the bug it exists to prevent: a retry-tier consumer computing .dlt directly from
+		// record.topic() (already "...retry") would produce "...retry.dlt" instead of "....dlt".
+		assertThat(Topics.base(Topics.retry(Topics.TRANSFER_INITIATED))).isEqualTo(Topics.TRANSFER_INITIATED);
+		assertThat(Topics.base(Topics.dlt(Topics.TRANSFER_INITIATED))).isEqualTo(Topics.TRANSFER_INITIATED);
+		assertThat(Topics.base(Topics.TRANSFER_INITIATED)).isEqualTo(Topics.TRANSFER_INITIATED);
+		assertThat(Topics.dlt(Topics.base(Topics.retry(Topics.TRANSFER_INITIATED))))
+				.isEqualTo("transfer.initiated.dlt");
+	}
+
+	@Test
 	void missingRequiredHeaderBecomesAClearValidationProblem() throws NoSuchMethodException {
 		var parameter = new org.springframework.core.MethodParameter(
 				HandlerMethod.class.getDeclaredMethod("hashCode"), -1);

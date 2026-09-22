@@ -9,7 +9,7 @@
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
 ![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
 
-> **Project status:** in active development (12-day solo build). Days 1-5 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, with Resilience4j protecting the call between them, and a **poller reliably publishes those rows to Kafka**, keyed by account id and safe to retry after a crash. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** in active development (12-day solo build). Days 1-6 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -357,9 +357,9 @@ What step 1 gives you:
 
 To stop everything: `docker compose -f infra/docker-compose.yml down` (add `-v` to also wipe the data).
 
-### What you can try today (Days 1-5)
+### What you can try today (Days 1-6)
 
-Start the infrastructure (above), install the shared library once, then run four services in separate terminals:
+Start the infrastructure (above), install the shared library once, then run five services in separate terminals:
 
 ```bash
 ./mvnw -q -pl common install
@@ -375,6 +375,10 @@ cd services/account-service && ./mvnw spring-boot:run
 
 ```bash
 cd services/transaction-service && ./mvnw spring-boot:run
+```
+
+```bash
+cd services/partner-bank-service && ./mvnw spring-boot:run
 ```
 
 ```bash
@@ -484,6 +488,55 @@ Three things worth knowing:
 - **The event id is the outbox row's own id**, not a fresh one minted at publish time. If the process crashes after Kafka has the message but before the row is marked published, the next poll resends it with the exact same `eventId` — a downstream idempotent consumer (Day 6 onward, the same pattern account-service already uses for debits) recognizes and skips the duplicate instead of double-processing it.
 - **A poll cycle never republishes an already-published row** and never lets one bad row block the others in the same batch — each send is independent, and a failure is simply left for the next cycle to retry.
 
+#### Partner Bank and saga completion (Day 6)
+
+This is where the saga actually finishes: partner-bank-service (port 8084) consumes `transfer.initiated`, "credits" the counterparty in its own mock ledger, and publishes `transfer.completed` or `transfer.failed`. Transaction-service consumes that result and either completes the transfer or compensates it — the debit is reversed, and the customer's money comes back.
+
+```bash
+# demoable, deterministic failure trigger: no shared state, no flag to flip
+curl -s -X POST http://localhost:8080/api/transfers \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' -H 'Idempotency-Key: try-a-failure' \
+  -d '{"fromAccountId":"<accountId>","toAccountId":"FAIL-anything","amountMinor":2000}'
+# a few hundred ms later:
+curl -s http://localhost:8080/api/transfers/<id> -H "Authorization: Bearer $ACCESS_TOKEN"
+# {"status":"REVERSED", ...} — and the account balance is back to what it was before the transfer
+```
+
+Any `toAccountId` starting with `FAIL-` (configurable, `sentinelbank.partner-bank.failure-trigger-prefix`) is rejected by the mock partner bank; everything else is credited. This is what lets the compensation path be demoed on command instead of by chance, with no shared toggle to coordinate or forget to reset.
+
+**partner-bank-service's own record**, for verification (not reachable through the gateway):
+
+```bash
+curl -s http://localhost:8084/internal/partner-credits/<transferId>
+# {"transferId":"...","toAccountId":"FAIL-anything","outcome":"REJECTED", ...}
+```
+
+What happens on `transfer.failed`, matching the compensation sequence diagram above:
+1. `DEBITED -> COMPENSATING` (its own committed transaction, before anything remote is attempted).
+2. A credit request to account-service, **for the exact same amount, reusing the original transfer id as the reference** — the same idempotent-by-reference debit/credit design from Day 3, so this call is just as safe to retry as the original debit.
+3. `COMPENSATING -> REVERSED`, once the credit succeeds.
+
+If the credit call itself fails after Resilience4j's retries are exhausted, that exception is left to propagate out of the Kafka listener on purpose: the container's own error handler (below) treats the delivery as failed and retries it through the same two-tier mechanism as everything else. The transfer stays visibly `COMPENSATING` (via `GET /transfers/{id}`) until it resolves — nothing is silently lost.
+
+**Retry, then a dead-letter topic — for real this time.** Day 5 only ever published; this is the first thing in the project that actually *consumes*. Every consumer (partner-bank-service on `transfer.initiated`, transaction-service on `transfer.completed`/`transfer.failed`) is wired with two tiers:
+
+```mermaid
+flowchart LR
+    A["Main topic<br/>3 fast retries"] -- "still failing" --> B["<code>.retry</code> topic<br/>3 slower retries"]
+    B -- "still failing" --> C["<code>.dlt</code> topic<br/>parked for a human"]
+    A -- "succeeds" --> D([Done])
+    B -- "succeeds" --> D
+```
+
+A malformed message, a database blip, an unknown transfer id — anything that makes the listener throw — is retried a few times in place, then a few times more from the `.retry` topic, and only then does it land on `.dlt`. A poison message never blocks the partition behind it, and it is never silently dropped either. Watch it happen:
+
+```bash
+docker exec sentinelbank-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic transfer.initiated.dlt --from-beginning --property print.headers=true
+```
+
+**Idempotent by design, not by luck.** partner-bank-service keys on `transferId` (unique in its own table): redelivering the same `transfer.initiated` — whether Kafka's own at-least-once redelivery or the outbox publisher resending after a crash — never credits twice and never publishes a second result event. Transaction-service's result consumer reads the transfer's *current* status before doing anything: a redelivered `transfer.completed` on an already-`COMPLETED` transfer is a no-op, and a redelivered `transfer.failed` mid-compensation resumes correctly rather than crediting the account a second time.
+
 Security details worth knowing:
 
 - **Passwords** are stored as BCrypt hashes. **Refresh tokens** are random and single-use; only their SHA-256 hash is stored. Presenting an already-used refresh token is treated as theft and revokes every session of that user.
@@ -526,7 +579,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 | 3 | Account service (ledger, optimistic locking, idempotent debit/credit) | ✅ done |
 | 4 | Transaction service (transfer API, idempotency, saga state, outbox) | ✅ done |
 | 5 | Outbox publisher and Kafka topics | ✅ done |
-| 6 | Partner Bank, saga completion, compensation, retry and DLT | ⬜ |
+| 6 | Partner Bank, saga completion, compensation, retry and DLT | ✅ done |
 | 7 | Fraud service (rules, cases) | ⬜ |
 | 8 | Notification and Audit services | ⬜ |
 | 9 | Angular app (customer and analyst views) | ⬜ |
