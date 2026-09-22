@@ -32,6 +32,9 @@ public class OutboxEvent {
 	@Column(nullable = false, columnDefinition = "text")
 	private String payload;
 
+	@Column(name = "partition_key", nullable = false)
+	private String partitionKey;
+
 	@Column(name = "correlation_id")
 	private String correlationId;
 
@@ -45,12 +48,20 @@ public class OutboxEvent {
 		// for JPA
 	}
 
-	public OutboxEvent(UUID aggregateId, String eventType, String payload, String correlationId) {
+	public OutboxEvent(UUID aggregateId, String eventType, String payload, String partitionKey,
+			String correlationId) {
 		this.aggregateId = aggregateId;
 		this.eventType = eventType;
 		this.payload = payload;
+		this.partitionKey = partitionKey;
 		this.correlationId = correlationId;
 		this.createdAt = Instant.now();
+	}
+
+	/** Marks this event as sent. Idempotent: publishing it again (a crash right after the first send,
+	 * before this was called) simply overwrites the timestamp rather than erroring. */
+	public void markPublished(Instant publishedAt) {
+		this.publishedAt = publishedAt;
 	}
 
 	public UUID getId() {
@@ -67,6 +78,10 @@ public class OutboxEvent {
 
 	public String getPayload() {
 		return payload;
+	}
+
+	public String getPartitionKey() {
+		return partitionKey;
 	}
 
 	public String getCorrelationId() {

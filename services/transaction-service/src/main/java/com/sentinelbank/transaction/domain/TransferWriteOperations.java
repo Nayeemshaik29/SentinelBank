@@ -65,7 +65,7 @@ public class TransferWriteOperations {
 		outboxEvents.save(new OutboxEvent(transfer.getId(), Topics.TRANSFER_INITIATED,
 				toJson(new TransferInitiatedPayload(transfer.getId(), transfer.getFromAccountId(),
 						transfer.getToAccountId(), transfer.getAmountMinor(), transfer.getCurrency())),
-				correlationId));
+				transfer.getFromAccountId().toString(), correlationId));
 		return transfer;
 	}
 

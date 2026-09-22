@@ -18,6 +18,15 @@ spring:
     schemas: transaction
     default-schema: transaction
     create-schemas: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all               # wait for every in-sync replica before considering the send successful
+      properties:
+        enable.idempotence: true   # the Kafka producer's own retries never create a duplicate on the broker
+        delivery.timeout.ms: 10000
 
 management:
   endpoints:
@@ -32,6 +41,11 @@ logging:
 sentinelbank:
   services:
     account-url: ${ACCOUNT_SERVICE_URL:http://localhost:8082}
+  outbox:
+    # Spring's @Scheduled fixedDelayString wants a plain millisecond number, not a "500ms"-style
+    # duration string, so this is kept separate from send-timeout below (which IS bound as a Duration).
+    poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:500}
+    send-timeout: 5s
 
 resilience4j:
   circuitbreaker:
