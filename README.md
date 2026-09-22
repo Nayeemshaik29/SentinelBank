@@ -50,6 +50,10 @@ The point of the project is **not** the number of features. It is showing that m
 
 ## Architecture
 
+![SentinelBank architecture diagram](docs/architecture-diagram.svg)
+
+The diagram above is the quick visual reference. The one below is the same system as a Mermaid flowchart, which GitHub renders natively and which stays text-searchable and diffable as the project changes:
+
 ```mermaid
 flowchart LR
     subgraph Clients
