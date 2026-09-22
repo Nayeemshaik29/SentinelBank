@@ -9,7 +9,7 @@
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
 ![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
 
-> **Project status:** in active development (12-day solo build). Days 1 and 2 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, and **login, JWT security and the API gateway work end to end**. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** in active development (12-day solo build). Days 1-3 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, and the **account ledger enforces optimistic locking and idempotency under real concurrency**. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -357,9 +357,9 @@ What step 1 gives you:
 
 To stop everything: `docker compose -f infra/docker-compose.yml down` (add `-v` to also wipe the data).
 
-### What you can try today (Days 1 and 2)
+### What you can try today (Days 1-3)
 
-Start the infrastructure (above), install the shared library once, then run the two services in separate terminals:
+Start the infrastructure (above), install the shared library once, then run three services in separate terminals:
 
 ```bash
 ./mvnw -q -pl common install
@@ -367,6 +367,10 @@ Start the infrastructure (above), install the shared library once, then run the 
 
 ```bash
 cd services/auth-service && ./mvnw spring-boot:run
+```
+
+```bash
+cd services/account-service && ./mvnw spring-boot:run
 ```
 
 ```bash
@@ -398,6 +402,32 @@ Who may reach which path is decided in one place, the gateway:
 | `/api/fraud/**` | `ANALYST` only |
 | `/api/transfers/**`, `/api/ai/**` | `CUSTOMER` only |
 | everything else | any signed-in user |
+
+#### Accounts and the ledger (Day 3)
+
+| Request (via the gateway) | Who can call it | What it does |
+|---|---|---|
+| `POST /api/accounts` | any signed-in user | Opens an account (`{"currency":"USD"}`), balance starts at 0 |
+| `GET /api/accounts` | any signed-in user | Lists your own accounts |
+| `GET /api/accounts/{id}` | owner, or an `ANALYST` | Balance and status. A non-owner gets `404`, not `403`, so an account's existence is never leaked |
+| `GET /api/accounts/{id}/ledger` | owner, or an `ANALYST` | Every debit and credit, newest first |
+
+Balances are a whole number of the smallest currency unit (`balanceMinor`, cents for USD), never a float. Two demo accounts (USD 5,000.00 and USD 10,000.00) are seeded under a fixed placeholder owner id, for trying the ledger with curl or Postman before a real registered customer opens one; disable with `SEED_DEMO_ACCOUNTS=false`.
+
+**Debit and credit are not reachable through the gateway or by any customer.** They live at `POST /internal/accounts/{id}/debit` and `/credit`, directly on the account service's own port (`8082`) — a completely different path from `/accounts/**`, so no gateway route can ever forward to them. Only other services (Transaction, on Day 4) call them, passing:
+- `referenceId`: the idempotency key. The same debit request repeated any number of times moves money exactly once and returns the same result.
+- `amountMinor`: must be positive.
+
+```bash
+# what transaction-service will do on Day 4: call account-service directly, not through the gateway
+curl -s -X POST http://localhost:8082/internal/accounts/<accountId>/debit \
+  -H 'Content-Type: application/json' \
+  -d '{"referenceId":"txn-123","amountMinor":2500,"description":"groceries"}'
+```
+
+Two guarantees worth knowing about, both proven by tests running 10-16 threads at once against a real PostgreSQL container:
+- **Optimistic locking** (`@Version`): concurrent debits on the same account never lose an update. The loser of a write race is retried automatically in a fresh transaction, up to 10 times.
+- **Idempotency**: whether a debit is retried sequentially (a client resending after a timeout) or arrives from several threads at the exact same instant (a genuine race), the same `referenceId` results in exactly one ledger entry and one balance change. A debit and its later compensating credit (Day 6's saga reversal) deliberately share one `referenceId`, distinguished only by entry type.
 
 Security details worth knowing:
 
@@ -438,7 +468,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 |---|---|---|
 | 1 | Foundation: repo layout, the 9 service skeletons, infra compose file, `common` module | ✅ done |
 | 2 | Auth service and gateway (JWT, routing, rate limit) | ✅ done |
-| 3 | Account service (ledger, optimistic locking, idempotent debit/credit) | ⬜ |
+| 3 | Account service (ledger, optimistic locking, idempotent debit/credit) | ✅ done |
 | 4 | Transaction service (transfer API, idempotency, saga state, outbox) | ⬜ |
 | 5 | Outbox publisher and Kafka topics | ⬜ |
 | 6 | Partner Bank, saga completion, compensation, retry and DLT | ⬜ |

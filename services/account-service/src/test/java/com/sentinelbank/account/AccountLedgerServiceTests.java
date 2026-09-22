@@ -49,12 +49,11 @@ class AccountLedgerServiceTests {
 	@Autowired
 	private PlatformTransactionManager transactionManager;
 
+	/** Seeds the balance directly (not through {@code credit}) so it never shows up as a ledger entry. */
 	private UUID openAccount(long openingBalanceMinor) {
-		Account account = accountService.open(UUID.randomUUID(), "USD");
-		if (openingBalanceMinor > 0) {
-			accountService.credit(account.getId(), "opening-balance", openingBalanceMinor, "seed");
-		}
-		return account.getId();
+		String accountNumber = "TEST" + UUID.randomUUID().toString().substring(0, 8);
+		Account account = new Account(UUID.randomUUID(), accountNumber, "USD", openingBalanceMinor);
+		return accountRepository.saveAndFlush(account).getId();
 	}
 
 	@Test
