@@ -3,23 +3,19 @@ package com.sentinelbank.fraud;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
-import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.mongodb.MongoDBContainer;
 import org.testcontainers.utility.DockerImageName;
 
+/** A throwaway real MongoDB for the tests. Kafka is started and wired separately (see
+ * TransferInitiatedListenerTests): @ServiceConnection on Kafka did not reliably win over the
+ * spring.kafka.bootstrap-servers property already defined in application.yaml, the same issue found and
+ * fixed in transaction-service and partner-bank-service. */
 @TestConfiguration(proxyBeanMethods = false)
 class TestcontainersConfiguration {
 
 	@Bean
 	@ServiceConnection
-	KafkaContainer kafkaContainer() {
-		return new KafkaContainer(DockerImageName.parse("apache/kafka-native:latest"));
-	}
-
-	@Bean
-	@ServiceConnection
 	MongoDBContainer mongoDbContainer() {
-		return new MongoDBContainer(DockerImageName.parse("mongo:latest"));
+		return new MongoDBContainer(DockerImageName.parse("mongo:8"));
 	}
-
 }

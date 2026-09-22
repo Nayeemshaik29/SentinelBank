@@ -9,7 +9,7 @@
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
 ![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
 
-> **Project status:** in active development (12-day solo build). Days 1-6 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** in active development (12-day solo build). Days 1-7 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. **fraud-service now watches every transfer asynchronously**, opening a case in MongoDB when a rule fires (large amount, round amount, velocity, new beneficiary), idempotently and visible only to analysts. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -361,9 +361,9 @@ What step 1 gives you:
 
 To stop everything: `docker compose -f infra/docker-compose.yml down` (add `-v` to also wipe the data).
 
-### What you can try today (Days 1-6)
+### What you can try today (Days 1-7)
 
-Start the infrastructure (above), install the shared library once, then run five services in separate terminals:
+Start the infrastructure (above), install the shared library once, then run six services in separate terminals:
 
 ```bash
 ./mvnw -q -pl common install
@@ -383,6 +383,10 @@ cd services/transaction-service && ./mvnw spring-boot:run
 
 ```bash
 cd services/partner-bank-service && ./mvnw spring-boot:run
+```
+
+```bash
+cd services/fraud-service && ./mvnw spring-boot:run
 ```
 
 ```bash
@@ -550,7 +554,35 @@ Security details worth knowing:
 - **Tracing:** one `X-Correlation-Id` is created (or kept) at the gateway and appears in the logs of every service the request touches.
 - Both services must share the same `JWT_SECRET`. The built-in default is for local development only.
 
-### Demo script (planned, Day 12)
+#### Fraud detection (Day 7)
+
+fraud-service (port 8085, MongoDB) watches `transfer.initiated` in its own consumer group — a separate copy of every message from the one partner-bank-service consumes, which is exactly what lets settlement and fraud detection happen in parallel off the same event, neither blocking the other. **This is detection, not prevention**: rules run after the transfer has already happened, so a flagged transfer is never blocked or delayed — stated here plainly rather than implied, per the trade-off below.
+
+Four independent rules, any number of which can fire on one transfer (all reasons land on one case, not one case per rule):
+
+| Rule | Fires when |
+|---|---|
+| `LARGE_AMOUNT` | the amount is at or above a threshold (default $5,000.00) |
+| `ROUND_AMOUNT` | the amount is an exact multiple of a threshold (default $1,000.00) — a classic structuring/testing signal |
+| `VELOCITY` | this transfer is the 3rd or later from the same account within a rolling window (default 5 minutes) |
+| `NEW_BENEFICIARY` | the sending account has never sent to this destination before |
+
+```bash
+# a demo-friendly, deterministic way to trip two rules at once: $6,000.00 is both large and round
+curl -s -X POST http://localhost:8080/api/transfers \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' -H 'Idempotency-Key: trip-fraud-demo' \
+  -d '{"fromAccountId":"<accountId>","toAccountId":"PARTNER-DEMO","amountMinor":600000}'
+
+# as an analyst:
+curl -s http://localhost:8080/api/fraud/cases -H "Authorization: Bearer $ANALYST_ACCESS_TOKEN"
+# [{"transferId":"...","reasons":["LARGE_AMOUNT","ROUND_AMOUNT","NEW_BENEFICIARY"],"status":"OPEN",...}]
+```
+
+`GET /api/fraud/cases` is gateway-routed and restricted to `ANALYST` (see the [roles table](#user-flows) above) — a `CUSTOMER` token gets `403`. Every case is visible to every analyst; there is no per-analyst filtering, unlike account or transfer ownership.
+
+**Idempotent without a multi-document transaction.** This MongoDB is a single instance, not a replica set, so the multi-document transactions the SQL services rely on aren't available here. Idempotency instead comes from giving both `FraudCase` and a second, internal `ProcessedTransfer` record the transfer id as their own `_id` — MongoDB rejects a duplicate `_id` on its own, so each write is individually safe to repeat. `ProcessedTransfer` is written **last**, deliberately: its absence after a crash is exactly what tells a retry "this transfer wasn't fully handled, evaluate and (re)write it" — so a crash between opening the case and recording it as processed self-heals on the next redelivery instead of losing the case or duplicating it. The velocity and new-beneficiary rules query this same `ProcessedTransfer` history directly, so it doubles as the rule engine's memory of what it has already seen.
+
+Same two-tier retry-then-DLT wiring as every other consumer in the project (own consumer group `fraud-service`, so a poison `transfer.initiated` message here has no effect on partner-bank-service's or anyone else's processing of the same topic).
 1. Register and log in.
 2. Make a transfer, then check that balances changed, an audit event exists and a notification was sent.
 3. Repeat the request with the same `Idempotency-Key` and check that nothing moves twice.
@@ -584,7 +616,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 | 4 | Transaction service (transfer API, idempotency, saga state, outbox) | ✅ done |
 | 5 | Outbox publisher and Kafka topics | ✅ done |
 | 6 | Partner Bank, saga completion, compensation, retry and DLT | ✅ done |
-| 7 | Fraud service (rules, cases) | ⬜ |
+| 7 | Fraud service (rules, cases) | ✅ done |
 | 8 | Notification and Audit services | ⬜ |
 | 9 | Angular app (customer and analyst views) | ⬜ |
 | 10 | Hardening and integration tests (Testcontainers) | ⬜ |

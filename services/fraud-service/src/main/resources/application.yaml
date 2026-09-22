@@ -1,3 +1,67 @@
+server:
+  port: 8085
+
 spring:
   application:
     name: fraud-service
+  # Boot 4 split Mongo config across two properties classes with two different prefixes, which is easy to
+  # get wrong (both look identically plausible and neither fails loudly — see below):
+  #   - spring.mongodb.*      -> the driver connection (uri, representation.uuid, ...). This used to be
+  #                              spring.data.mongodb.* in older Boot; that old prefix is now a HARD
+  #                              (error-level) deprecation for these specific keys — it is silently not
+  #                              bound at all, not just discouraged. Getting this wrong doesn't fail
+  #                              startup or even break reads/writes: the driver just falls back to its
+  #                              own defaults (localhost:27017, database "test"), which happened here
+  #                              until a live run turned up data sitting in "test" instead of "fraud".
+  #   - spring.data.mongodb.* -> genuinely still current for Spring Data-level settings that have no
+  #                              connection equivalent, e.g. auto-index-creation below.
+  mongodb:
+    uri: mongodb://${MONGO_HOST:localhost}:${MONGO_PORT:27017}/fraud
+    # Without this, the Mongo driver refuses to encode any UUID field (transferId, fromAccountId, ...) at
+    # all: "The uuidRepresentation has not been specified, so the UUID cannot be encoded." "standard" is
+    # the modern, cross-driver-compatible encoding (as opposed to the legacy Java/C#/Python-specific byte
+    # orderings kept only for reading old data written by very old driver versions).
+    representation:
+      uuid: standard
+  data:
+    mongodb:
+      auto-index-creation: true   # lets @Indexed/@CompoundIndex on the documents create their own indexes
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # This service has no business events of its own to publish; this producer exists only because
+      # DeadLetterPublishingRecoverer (see config.KafkaConsumerConfig) needs one to move a failed message
+      # on to its .retry / .dlt topic.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      group-id: fraud-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      enable-auto-commit: false   # the record is only acknowledged after our own processing commits
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{correlationId:-}]"
+
+sentinelbank:
+  fraud:
+    # Every threshold a demo/test might want to tune without touching code.
+    large-amount-minor: ${FRAUD_LARGE_AMOUNT_MINOR:500000}       # $5,000.00
+    round-amount-modulus: ${FRAUD_ROUND_AMOUNT_MODULUS:100000}   # flags multiples of $1,000.00
+    velocity-window: ${FRAUD_VELOCITY_WINDOW:5m}
+    velocity-threshold: ${FRAUD_VELOCITY_THRESHOLD:3}            # this transfer plus 2 or more in the window
+  kafka:
+    retry:
+      max-attempts: 3
+      backoff-ms: 500
+    retry-topic:
+      max-attempts: 3
+      backoff-ms: 3000
