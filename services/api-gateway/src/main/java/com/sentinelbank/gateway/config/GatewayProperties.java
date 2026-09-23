@@ -11,8 +11,10 @@ public record GatewayProperties(Jwt jwt, Services services, RateLimit rateLimit,
 	public record Jwt(String secret, String issuer) {
 	}
 
-	/** Base URLs of the downstream services. */
-	public record Services(String auth, String account, String transaction, String fraud, String aiAgent) {
+	/** Base URLs of the downstream services. notification-service is deliberately absent: it has no
+	 * customer- or analyst-facing API, only a background Kafka consumer (Day 8). */
+	public record Services(String auth, String account, String transaction, String fraud, String audit,
+			String aiAgent) {
 	}
 
 	public record RateLimit(int generalPerMinute, int authPerMinute) {

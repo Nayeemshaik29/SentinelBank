@@ -104,6 +104,16 @@ public class AccountService {
 		return account;
 	}
 
+	/**
+	 * No ownership check, unlike {@link #getVisibleTo}: this is for service-to-service callers on the
+	 * {@code /internal/**} path (see {@code InternalAccountController}), which is trusted by network
+	 * boundary rather than by caller identity — the same trust model as {@code debit}/{@code credit}.
+	 */
+	@Transactional(readOnly = true)
+	public Account getById(UUID accountId) {
+		return accounts.findById(accountId).orElseThrow(AccountService::notFound);
+	}
+
 	@Transactional(readOnly = true)
 	public List<LedgerEntry> ledgerVisibleTo(UUID accountId, UUID callerId, boolean callerIsAnalyst) {
 		getVisibleTo(accountId, callerId, callerIsAnalyst); // ownership check, result unused

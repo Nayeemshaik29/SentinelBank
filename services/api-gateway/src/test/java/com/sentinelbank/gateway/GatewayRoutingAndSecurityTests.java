@@ -26,6 +26,7 @@ class GatewayRoutingAndSecurityTests {
 		registry.add("sentinelbank.services.account", stub::url);
 		registry.add("sentinelbank.services.transaction", stub::url);
 		registry.add("sentinelbank.services.fraud", stub::url);
+		registry.add("sentinelbank.services.audit", stub::url);
 		registry.add("sentinelbank.services.ai-agent", stub::url);
 		registry.add("sentinelbank.rate-limit.general-per-minute", () -> "1000");
 		registry.add("sentinelbank.rate-limit.auth-per-minute", () -> "1000");
@@ -109,6 +110,19 @@ class GatewayRoutingAndSecurityTests {
 		client.get().uri("/api/fraud/cases").header(HttpHeaders.AUTHORIZATION, "Bearer " + analyst).exchange()
 				.expectStatus().isOk()
 				.expectBody().jsonPath("$.path").isEqualTo("/fraud/cases");
+	}
+
+	@Test
+	void auditRoutesAreForAnalystsOnly() {
+		String customer = TestTokens.token("c-1", "c@example.com", List.of("CUSTOMER"));
+		String analyst = TestTokens.token("a-1", "a@example.com", List.of("ANALYST"));
+
+		client.get().uri("/api/audit/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + customer).exchange()
+				.expectStatus().isForbidden()
+				.expectBody().jsonPath("$.code").isEqualTo("FORBIDDEN");
+		client.get().uri("/api/audit/events").header(HttpHeaders.AUTHORIZATION, "Bearer " + analyst).exchange()
+				.expectStatus().isOk()
+				.expectBody().jsonPath("$.path").isEqualTo("/audit/events");
 	}
 
 	@Test

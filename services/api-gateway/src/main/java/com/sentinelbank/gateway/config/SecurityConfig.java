@@ -34,7 +34,7 @@ import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
  *
  * <ul>
  * <li>register, login, refresh, logout and health: public</li>
- * <li>/api/fraud/**: ANALYST only</li>
+ * <li>/api/fraud/** and /api/audit/**: ANALYST only</li>
  * <li>/api/transfers/** and /api/ai/**: CUSTOMER only</li>
  * <li>everything else: any signed-in user</li>
  * </ul>
@@ -64,6 +64,7 @@ class SecurityConfig {
 						.permitAll()
 						.pathMatchers("/actuator/health/**", "/actuator/info").permitAll()
 						.pathMatchers("/api/fraud/**").hasRole("ANALYST")
+						.pathMatchers("/api/audit/**").hasRole("ANALYST")
 						.pathMatchers("/api/ai/**").hasRole("CUSTOMER")
 						// Only a customer moves money, but an analyst can read any transfer for fraud
 						// investigation (transaction-service already allows that at the application level) —

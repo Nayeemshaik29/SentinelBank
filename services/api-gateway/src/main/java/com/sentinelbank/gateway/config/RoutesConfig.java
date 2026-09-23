@@ -21,6 +21,7 @@ class RoutesConfig {
 				.route("transfers",
 						r -> r.path("/api/transfers/**").filters(f -> f.stripPrefix(1)).uri(urls.transaction()))
 				.route("fraud", r -> r.path("/api/fraud/**").filters(f -> f.stripPrefix(1)).uri(urls.fraud()))
+				.route("audit", r -> r.path("/api/audit/**").filters(f -> f.stripPrefix(1)).uri(urls.audit()))
 				.route("ai", r -> r.path("/api/ai/**").filters(f -> f.stripPrefix(1)).uri(urls.aiAgent()))
 				.build();
 	}

@@ -9,7 +9,7 @@
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
 ![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
 
-> **Project status:** in active development (12-day solo build). Days 1-7 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. **fraud-service now watches every transfer asynchronously**, opening a case in MongoDB when a rule fires (large amount, round amount, velocity, new beneficiary), idempotently and visible only to analysts. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** in active development (12-day solo build). Days 1-8 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. **fraud-service watches every transfer asynchronously**, opening a case in MongoDB when a rule fires (large amount, round amount, velocity, new beneficiary), idempotently and visible only to analysts. **notification-service emails the customer** when a transfer completes or fails (MailHog locally), and **audit-service keeps a complete, append-only trail** of every `transfer.*` event, both as independent consumer groups off the same events everyone else already reacts to. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -361,9 +361,9 @@ What step 1 gives you:
 
 To stop everything: `docker compose -f infra/docker-compose.yml down` (add `-v` to also wipe the data).
 
-### What you can try today (Days 1-7)
+### What you can try today (Days 1-8)
 
-Start the infrastructure (above), install the shared library once, then run six services in separate terminals:
+Start the infrastructure (above), install the shared library once, then run eight services in separate terminals:
 
 ```bash
 ./mvnw -q -pl common install
@@ -387,6 +387,14 @@ cd services/partner-bank-service && ./mvnw spring-boot:run
 
 ```bash
 cd services/fraud-service && ./mvnw spring-boot:run
+```
+
+```bash
+cd services/notification-service && ./mvnw spring-boot:run
+```
+
+```bash
+cd services/audit-service && ./mvnw spring-boot:run
 ```
 
 ```bash
@@ -415,9 +423,12 @@ Who may reach which path is decided in one place, the gateway:
 | Path | Access |
 |---|---|
 | `/api/auth/register`, `login`, `refresh`, `logout`, `/actuator/health` | public |
-| `/api/fraud/**` | `ANALYST` only |
+| `/api/fraud/**`, `/api/audit/**` | `ANALYST` only |
 | `/api/transfers/**`, `/api/ai/**` | `CUSTOMER` only |
 | everything else | any signed-in user |
+
+notification-service has no gateway route at all: it has no customer- or analyst-facing API, only a
+background Kafka consumer (see below).
 
 #### Accounts and the ledger (Day 3)
 
@@ -583,6 +594,38 @@ curl -s http://localhost:8080/api/fraud/cases -H "Authorization: Bearer $ANALYST
 **Idempotent without a multi-document transaction.** This MongoDB is a single instance, not a replica set, so the multi-document transactions the SQL services rely on aren't available here. Idempotency instead comes from giving both `FraudCase` and a second, internal `ProcessedTransfer` record the transfer id as their own `_id` — MongoDB rejects a duplicate `_id` on its own, so each write is individually safe to repeat. `ProcessedTransfer` is written **last**, deliberately: its absence after a crash is exactly what tells a retry "this transfer wasn't fully handled, evaluate and (re)write it" — so a crash between opening the case and recording it as processed self-heals on the next redelivery instead of losing the case or duplicating it. The velocity and new-beneficiary rules query this same `ProcessedTransfer` history directly, so it doubles as the rule engine's memory of what it has already seen.
 
 Same two-tier retry-then-DLT wiring as every other consumer in the project (own consumer group `fraud-service`, so a poison `transfer.initiated` message here has no effect on partner-bank-service's or anyone else's processing of the same topic).
+
+#### Notification and Audit (Day 8)
+
+Two more independent consumer groups off the same `transfer.*` events, neither one able to slow down or break the saga, fraud detection, or each other.
+
+**notification-service** (port 8086, PostgreSQL) consumes `transfer.completed` and `transfer.failed` and emails the transfer's owner — MailHog locally, at `http://localhost:8025`. Resolving *who* to email takes two internal, service-to-service calls the event itself doesn't carry: `fromAccountId` → `ownerId` (a new `GET /internal/accounts/{id}` on account-service) → email address (a new `GET /internal/users/{id}` on auth-service), the same `/internal/**`, network-boundary-trusted pattern as account-service's existing debit/credit endpoints.
+
+```bash
+# after driving a transfer to completion or failure (see above), check what was sent:
+curl -s http://localhost:8025/api/v2/messages | python3 -m json.tool   # MailHog's own inbox
+curl -s http://localhost:8086/internal/notifications/<transferId>      # this service's own record
+# {"transferId":"...","recipientEmail":"customer@sentinelbank.dev","type":"TRANSFER_COMPLETED","sentAt":"..."}
+```
+
+Idempotent by `transferId` (unique in `notification_log`, the same SQL pattern as every other idempotent write in this project) — but with one honestly-stated trade-off the others don't make: the email send happens *before* the row is recorded, not after. A crash in between means a redelivery finds no record, resolves the recipient again, and sends a second email. For a notification, "at least once" is an acceptable risk in a way it would never be for a debit or a credit — the cost of getting it wrong is a duplicate email, not duplicated money.
+
+**audit-service** (port 8087, MongoDB) consumes all three topics — `transfer.initiated`, `transfer.completed`, `transfer.failed` — in one listener, and keeps a complete, append-only trail. There is no update or delete endpoint anywhere in this service, on purpose: an audit trail that could be edited after the fact would not be one.
+
+```bash
+# as an analyst, one transfer's whole story, in order:
+curl -s http://localhost:8080/api/audit/events/<transferId> -H "Authorization: Bearer $ANALYST_ACCESS_TOKEN"
+# [{"eventType":"transfer.initiated",...}, {"eventType":"transfer.completed",...}]
+
+# or the general feed, newest first:
+curl -s http://localhost:8080/api/audit/events -H "Authorization: Bearer $ANALYST_ACCESS_TOKEN"
+```
+
+Unlike fraud-service's typed payload records, audit-service deliberately deserializes each event's payload as a generic map rather than one of transaction-service's, partner-bank-service's or fraud-service's own payload shapes — an audit trail's job is to preserve what was actually sent, not to interpret it, so it does not need three separate copies of three services' payload records to cover three topics with one listener. Idempotent the same way fraud-service is (Mongo's own `_id` uniqueness), keyed by the envelope's own `eventId` rather than the transfer id, since one transfer legitimately produces more than one audit record.
+
+Gateway access for both follows the established back-office model: `/api/audit/**` is `ANALYST`-only, same as `/api/fraud/**`. notification-service has no gateway route at all — it has no API for a person to call, only a Kafka consumer.
+
+### Demo script (planned, Day 12)
 1. Register and log in.
 2. Make a transfer, then check that balances changed, an audit event exists and a notification was sent.
 3. Repeat the request with the same `Idempotency-Key` and check that nothing moves twice.
@@ -617,7 +660,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 | 5 | Outbox publisher and Kafka topics | ✅ done |
 | 6 | Partner Bank, saga completion, compensation, retry and DLT | ✅ done |
 | 7 | Fraud service (rules, cases) | ✅ done |
-| 8 | Notification and Audit services | ⬜ |
+| 8 | Notification and Audit services | ✅ done |
 | 9 | Angular app (customer and analyst views) | ⬜ |
 | 10 | Hardening and integration tests (Testcontainers) | ⬜ |
 | 11 | AI agent (thin, read-only) and buffer | ⬜ |

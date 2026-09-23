@@ -27,6 +27,11 @@ class SecurityConfig {
 				.authorizeHttpRequests(auth -> auth
 						.requestMatchers("/auth/register", "/auth/login", "/auth/refresh", "/auth/logout").permitAll()
 						.requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
+						// Service-to-service only, same trust model as account-service's /internal/**: the
+						// gateway never routes this path, so the network boundary is the check, not a token.
+						// notification-service (Day 8) has no user JWT to present when a Kafka consumer
+						// resolves an owner id to an email address.
+						.requestMatchers("/internal/**").permitAll()
 						.anyRequest().authenticated())
 				.oauth2ResourceServer(oauth2 -> oauth2
 						.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));

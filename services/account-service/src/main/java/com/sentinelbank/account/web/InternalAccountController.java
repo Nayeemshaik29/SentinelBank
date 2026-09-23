@@ -3,10 +3,12 @@ package com.sentinelbank.account.web;
 import java.util.UUID;
 
 import com.sentinelbank.account.service.AccountService;
+import com.sentinelbank.account.web.dto.AccountResponse;
 import com.sentinelbank.account.web.dto.DebitCreditRequest;
 import com.sentinelbank.account.web.dto.LedgerEntryResponse;
 import jakarta.validation.Valid;
 
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -43,5 +45,12 @@ class InternalAccountController {
 	LedgerEntryResponse credit(@PathVariable UUID accountId, @Valid @RequestBody DebitCreditRequest body) {
 		return LedgerEntryResponse
 				.from(accountService.credit(accountId, body.referenceId(), body.amountMinor(), body.description()));
+	}
+
+	/** Added for notification-service (Day 8): resolving {@code fromAccountId} to its {@code ownerId} is
+	 * the first step in finding out who to email about a transfer's outcome. */
+	@GetMapping("/{accountId}")
+	AccountResponse get(@PathVariable UUID accountId) {
+		return AccountResponse.from(accountService.getById(accountId));
 	}
 }
