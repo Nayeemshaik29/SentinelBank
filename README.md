@@ -7,9 +7,9 @@
 ![Kafka](https://img.shields.io/badge/Apache%20Kafka-event--driven-231F20)
 ![Angular](https://img.shields.io/badge/Angular-frontend-DD0031)
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
-![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
+![Status](https://img.shields.io/badge/status-feature%20complete-brightgreen)
 
-> **Project status:** in active development (12-day solo build). Days 1-11 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. **fraud-service watches every transfer asynchronously**, opening a case in MongoDB when a rule fires (large amount, round amount, velocity, new beneficiary), idempotently and visible only to analysts. **notification-service emails the customer** when a transfer completes or fails (MailHog locally), and **audit-service keeps a complete, append-only trail** of every `transfer.*` event, both as independent consumer groups off the same events everyone else already reacts to. **The whole flow is now driven from a real Angular UI**: login and registration, opening accounts and reading their ledgers, sending transfers with live status updates as the saga settles, and a role-guarded `/analyst` area for fraud cases and the audit trail. **The whole system has now been hardened and proved live**: every service's integration test suite covers idempotent replay, optimistic-lock concurrency, outbox-to-Kafka delivery and saga failure/undo, resilience4j's circuit breakers are proven to actually open and recover (not just retry), and partner-bank-service has been killed and restarted against the live system to watch the saga survive a real outage with zero data loss. **A read-only spending assistant is now live too**: a `/assistant` chat page backed by Spring AI and a local Ollama model, answering questions about the caller's own accounts and transfers from masked, deterministically-fetched data (not LLM-invoked tool calls — the local model doesn't support those), with an independent output validator rejecting any hallucinated claim of having taken an action, and honest fallback messages when Ollama or a downstream service is unreachable. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** feature-complete (12-day solo build, all 12 days done). The 9 services are scaffolded, the shared `common` library exists, and the whole system — infra, all 9 services and the Angular app — now starts with **one Docker Compose command from a cold clone**. **Login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. **fraud-service watches every transfer asynchronously**, opening a case in MongoDB when a rule fires (large amount, round amount, velocity, new beneficiary), idempotently and visible only to analysts. **notification-service emails the customer** when a transfer completes or fails (MailHog locally), and **audit-service keeps a complete, append-only trail** of every `transfer.*` event, both as independent consumer groups off the same events everyone else already reacts to. **The whole flow is driven from a real Angular UI**: login and registration, opening accounts and reading their ledgers, sending transfers with live status updates as the saga settles, a role-guarded `/analyst` area for fraud cases and the audit trail, and a read-only AI spending assistant. **The whole system has been hardened and proved live**: every service's integration test suite covers idempotent replay, optimistic-lock concurrency, outbox-to-Kafka delivery and saga failure/undo, resilience4j's circuit breakers are proven to actually open and recover (not just retry), partner-bank-service has been killed and restarted against the live system to watch the saga survive a real outage with zero data loss, and — Day 12 — the entire stack has been torn down to nothing and brought back up cold with a single command, with the plan's full demo script (happy path, idempotent replay, failure/undo, fraud case) scripted and passing end to end against that fresh instance. See the [Roadmap](#roadmap) for the day-by-day breakdown. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -328,34 +328,56 @@ Base package per service: `com.sentinelbank.<name>` (for example `com.sentinelba
 
 ## Getting started
 
-**Prerequisites:** JDK 25, Docker Desktop, Node.js (for the Angular app). Maven is not needed, since each service ships with `./mvnw`.
+**Prerequisites:** Docker Desktop. That's it for the one-command path below — Docker builds the JVM and Node toolchains inside the images, so a clean clone with nothing else installed still runs.
+
+### One command, the whole system
 
 ```bash
-# 1. Start infrastructure: PostgreSQL, MongoDB, Kafka (topics are created automatically), MailHog
 docker compose -f infra/docker-compose.yml up -d
+```
+
+This single command builds and starts all 14 containers — PostgreSQL, MongoDB, Kafka (+ topic creation), MailHog, all 9 Spring Boot services and the Angular app itself (served by nginx, which reverse-proxies `/api` to the gateway — see `frontend/Dockerfile` and `infra/docker/nginx.conf`) — in the right dependency order, waiting on each other's health checks rather than just their process start. The first run takes a few minutes (Maven has to download the dependency tree once, cached in a BuildKit mount so the other 8 services don't each redo it); every run after that is seconds, since Docker only rebuilds what changed.
+
+```bash
+docker compose -f infra/docker-compose.yml ps       # everything should say "healthy"
+open http://localhost:4200                          # the app — log in with the seeded demo users below
+docker compose -f infra/docker-compose.yml down      # stop everything (add -v to also wipe the data)
+```
+
+**Verified**: torn down with `-v` (wiping every volume) and brought back up from nothing, all 14 containers reached `healthy`, the seeded demo logins worked immediately, and the full [demo script](#demo-script-day-12) below passed end to end against that fresh instance — this is a genuinely cold start, not a "works on my machine after weeks of local state" claim.
+
+One exception: `ai-agent-service`'s local Ollama model is **not** containerized (a multi-gigabyte model image is a lot to ask of a demo compose file) — it expects Ollama running on your own machine, reachable from the containers at Docker Desktop's `host.docker.internal`. If you don't have Ollama running, everything else works identically; the assistant's `/ai/ask` endpoint just answers with its honest "temporarily unavailable" fallback instead of a real model response (see [Spending assistant](#spending-assistant-day-11)) rather than failing to start.
+
+| Piece | Where | Notes |
+|---|---|---|
+| PostgreSQL 17 | `localhost:5433`, db `sentinelbank`, user/password `sentinel` | One schema per service (`auth`, `account`, `transaction`, `partner_bank`, `notification`) |
+| MongoDB 8 | `localhost:27017` | Used by `fraud-service` and `audit-service` |
+| Kafka 4 (KRaft) | `localhost:9092` | The 3 topics plus `.retry` and `.dlt` companions are created on start |
+| MailHog | SMTP `localhost:1025`, UI http://localhost:8025 | Catches the emails `notification-service` sends |
+| The 9 Spring Boot services | `localhost:8080`-`8088`, one port each (see [Services](#services)) | Same ports whether run this way or locally |
+| Angular app | http://localhost:4200 | Built for production and served by nginx |
+
+Seeded demo users: `customer@sentinelbank.dev` / `analyst@sentinelbank.dev`, both password `Demo#12345` (details in [What you can try today](#what-you-can-try-today-days-1-9)).
+
+### Local development instead (no Docker for the JVM/Node processes)
+
+The one-command path above is for running the whole system. For actively developing a service — fast restarts, a debugger attached, editing and re-running without a rebuild — run it directly with Maven instead, against the same Dockerized infra:
+
+```bash
+# 1. Start infrastructure only: PostgreSQL, MongoDB, Kafka (topics are created automatically), MailHog
+docker compose -f infra/docker-compose.yml up -d postgres mongo kafka kafka-init mailhog
 
 # 2. Build everything from the repo root (common library + all 9 services)
 ./mvnw -DskipTests package
 
-# 3. Run a service, for example the gateway  (services get their config as they are implemented)
+# 3. Run a service, for example the gateway (each has its own application.yaml with localhost defaults)
 cd services/api-gateway
 ./mvnw spring-boot:run
 
-# 4. Run the Angular app, once at least auth/account/transaction/api-gateway are up
+# 4. Run the Angular app in dev mode, once at least auth/account/transaction/api-gateway are up
 cd frontend
-npm install && npm start   # http://localhost:4200
+npm install && npm start   # http://localhost:4200, proxies to the gateway on :8080
 ```
-
-What step 1 gives you:
-
-| Piece | Where | Notes |
-|---|---|---|
-| PostgreSQL 17 | `localhost:5433`, db `sentinelbank`, user/password `sentinel` | One schema per service (`auth`, `account`, `transaction`, `partner_bank`, `notification`). Local dev credentials only |
-| MongoDB 8 | `localhost:27017` | Used by `fraud-service` and `audit-service` |
-| Kafka 4 (KRaft) | `localhost:9092` | The 3 topics plus `.retry` and `.dlt` companions are created on start |
-| MailHog | SMTP `localhost:1025`, UI http://localhost:8025 | Catches the emails `notification-service` sends |
-
-To stop everything: `docker compose -f infra/docker-compose.yml down` (add `-v` to also wipe the data).
 
 ### What you can try today (Days 1-9)
 
@@ -699,12 +721,35 @@ Resilience4j's settings themselves (`sliding-window-size: 20`, `minimum-number-o
 
 The Angular `/assistant` page (customer-only, role-guarded) is a simple chat log with signals for message history, an in-flight "Thinking…" state, and inline error display — built with the same `[ngModel]="draft()"` / `(ngModelChange)="draft.set($event)"` pattern the rest of the app uses for signal-backed form fields, since `[(ngModel)]` does not two-way-bind to a `WritableSignal` correctly.
 
-### Demo script (planned, Day 12)
-1. Register and log in.
-2. Make a transfer, then check that balances changed, an audit event exists and a notification was sent.
-3. Repeat the request with the same `Idempotency-Key` and check that nothing moves twice.
-4. Switch on the Partner Bank failure mode and check that the transfer ends `REVERSED`.
-5. Send a large or rapid transfer and check that a fraud case appears in the analyst view.
+### Polish and ship (Day 12)
+
+The last day's job was turning "it works if you already know how to run nine services" into a real cold-start experience, and proving the demo script the plan calls for actually holds up end to end rather than just describing what it should do.
+
+**One-command Docker Compose.** Every service now has a `Dockerfile` (well, one shared, parameterized one — see `infra/docker/service.Dockerfile` — every service compiles from the same Maven reactor, so a per-service Dockerfile would just be nine copies of the same three lines with a different build arg), and `infra/docker-compose.yml` grew from "just the infra" to all 14 containers: Postgres, Mongo, Kafka (+ topic init), MailHog, the 9 Spring Boot services and the Angular app (built for production, served by nginx, which reverse-proxies `/api` to the gateway container — see `infra/docker/nginx.conf`). No code changes were needed to make this work: every service already externalized its config as `${VAR:default}` placeholders from Day 1 onward, so the Docker environment just overrides `DB_HOST`/`KAFKA_BOOTSTRAP_SERVERS`/`*_SERVICE_URL` etc. to container names instead of `localhost`. `depends_on` conditions wait on each dependency's actual health check (not just its process start) — Postgres/Mongo/Kafka being "started" doesn't mean "ready to accept connections," and Flyway's migration-on-boot needs the real thing.
+
+One real bug found building this: the first `.dockerignore` used plain `target/` and `node_modules/` patterns, which only match at the *root* of the build context, not nested inside `services/*/target` or `frontend/node_modules` — so every image's build context was silently shipping 400-600MB of already-compiled `target/` output and `node_modules`. Switching to `**/target/`-style patterns (anchored at any depth) cut the transferred context from ~600MB to under 50KB per service.
+
+**Genuinely verified cold, not just "it built."** `docker compose down -v` (wiping every volume) followed by `docker compose up -d` from nothing: all 14 containers reached `healthy`, the seeded demo logins worked immediately, and Kafka had all 9 topics (3 base + `.retry` + `.dlt` each) auto-created. Then, against that fresh instance, the plan's own demo script, scripted end to end rather than clicked through once and forgotten:
+
+```
+1. Register + log in                          -> 201, then a real access/refresh token pair
+2. Open an account, fund it via account-service's
+   internal credit endpoint (demo-only shortcut)  -> balance 10,000.00
+3. Transfer 2,500.00                           -> DEBITED immediately, settles to COMPLETED
+                                                   in ~1s; balance -> 7,500.00; an audit
+                                                   trail (transfer.initiated + transfer.completed)
+                                                   and a MailHog email both exist
+4. Repeat the same request, same Idempotency-Key -> identical response, balance unchanged
+   at 7,500.00 -- no second debit
+5. Transfer 1,000.00 to a FAIL-prefixed account -> DEBITED, then settles to REVERSED;
+   balance refunded back to 7,500.00 -- compensation, not a stuck debit
+6. Transfer 6,000.00 (large + round + the third  -> a fraud case appears for the analyst,
+   transfer in a few minutes -> velocity)           reasons: LARGE_AMOUNT, ROUND_AMOUNT, VELOCITY
+```
+
+Every step matched expectations exactly, on the first try, against the fully Dockerized system. The same flow was then repeated by hand in the actual Angular UI (not just curl) — including asking the spending assistant "What's my balance?" from inside its own container and getting a real answer from Ollama running on the host machine via `host.docker.internal` — before the test data was wiped again (`down -v`) to leave the repo in the clean state a real cold clone would find it in.
+
+**Not done, on purpose.** Kubernetes manifests and a Zipkin/tracing stack were both explicitly scoped as "bonus, only if ahead" in the plan (see [PLAN.md](PLAN.md)) — Compose is the actual deployment target for this project, and adding a second orchestration story or a distributed-tracing stack in the time remaining would have meant either doing them shallowly or cutting into the verification work above. Left undone honestly rather than added half-finished.
 
 ---
 
@@ -738,7 +783,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 | 9 | Angular app (customer and analyst views) | ✅ done |
 | 10 | Hardening and integration tests (Testcontainers) | ✅ done |
 | 11 | AI agent (thin, read-only) and buffer | ✅ done |
-| 12 | Polish, README, demo script, optional Kubernetes | ⬜ |
+| 12 | Polish, README, demo script, optional Kubernetes | ✅ done (Kubernetes/Zipkin bonus skipped — see [design decisions](#design-decisions-and-trade-offs)) |
 
 The detailed plan, including the cut line if time runs short, is in [PLAN.md](PLAN.md).
 
