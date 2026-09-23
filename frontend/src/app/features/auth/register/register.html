@@ -1,7 +1,10 @@
 <div class="auth-page">
   <form class="card auth-card" [formGroup]="form" (ngSubmit)="submit()">
-    <h1>SentinelBank</h1>
-    <p class="muted" style="margin-top: -8px; margin-bottom: 20px">Create your account</p>
+    <div class="auth-brand">
+      <span class="auth-brand-mark">S</span>
+      <h1>SentinelBank</h1>
+    </div>
+    <p class="muted" style="margin-top: -8px; margin-bottom: 20px">Create your account in seconds</p>
 
     @if (errorMessage()) {
       <div class="alert alert-danger">{{ errorMessage() }}</div>

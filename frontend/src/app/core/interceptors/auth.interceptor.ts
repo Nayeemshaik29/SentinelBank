@@ -24,7 +24,7 @@ export function authInterceptor(
   const router = inject(Router);
 
   const isAuthEndpoint = AUTH_ENDPOINTS.some((path) => req.url.includes(path));
-  const withAuth = addHeaders(req, authService.getAccessToken());
+  const withAuth = addHeaders(req, isAuthEndpoint ? null : authService.getAccessToken());
 
   return next(withAuth).pipe(
     catchError((error: unknown) => {
