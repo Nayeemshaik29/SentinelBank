@@ -29,6 +29,11 @@ export const routes: Routes = [
         loadComponent: () => import('./features/transfers/transfers').then((m) => m.Transfers),
       },
       {
+        path: 'assistant',
+        canActivate: [roleGuard(['CUSTOMER'])],
+        loadComponent: () => import('./features/assistant/assistant').then((m) => m.Assistant),
+      },
+      {
         path: 'analyst/fraud-cases',
         canActivate: [roleGuard(['ANALYST'])],
         loadComponent: () => import('./features/analyst/fraud-cases').then((m) => m.FraudCases),

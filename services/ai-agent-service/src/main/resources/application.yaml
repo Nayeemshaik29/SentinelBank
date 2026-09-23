@@ -1,3 +1,37 @@
+server:
+  port: 8088
+
 spring:
   application:
     name: ai-agent-service
+  ai:
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        model: ${OLLAMA_MODEL:llama3}
+        temperature: 0.2
+        # A short, bounded answer: this is a demo spending assistant on a local model, not a chat
+        # product — keeping responses brief also keeps them fast on modest hardware.
+        num-predict: 220
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{correlationId:-}]"
+
+sentinelbank:
+  services:
+    # Called directly, never through the gateway, forwarding the caller's own identity (the same
+    # /internal-adjacent trust pattern as every other service-to-service call in this project) — see
+    # AccountServiceClient / TransactionServiceClient.
+    account: ${ACCOUNT_SERVICE_URL:http://localhost:8082}
+    transaction: ${TRANSACTION_SERVICE_URL:http://localhost:8083}
+  ai:
+    # How much of the caller's own history the assistant is shown — bounded on purpose, both to keep
+    # the prompt small for a local model and because "recent spending" doesn't need a full ledger.
+    max-recent-transfers: ${AI_MAX_RECENT_TRANSFERS:10}

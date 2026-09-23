@@ -1,0 +1,40 @@
+<h1>Spending assistant</h1>
+<p class="muted" style="margin-top: -8px; margin-bottom: 20px">
+  Read-only — it can tell you about your accounts and transfers, but it can never send money or change
+  anything on your behalf.
+</p>
+
+<div class="card chat-card">
+  <div class="chat-log">
+    @for (message of messages(); track $index) {
+      <div class="chat-row" [class.chat-row-user]="message.role === 'user'">
+        <div class="chat-bubble" [class.chat-bubble-user]="message.role === 'user'">
+          {{ message.text }}
+        </div>
+      </div>
+    }
+    @if (sending()) {
+      <div class="chat-row">
+        <div class="chat-bubble muted">Thinking…</div>
+      </div>
+    }
+    <div #scrollAnchor></div>
+  </div>
+
+  @if (errorMessage()) {
+    <div class="alert alert-danger" style="margin: 0 16px 12px">{{ errorMessage() }}</div>
+  }
+
+  <form class="chat-input" (ngSubmit)="send()">
+    <input
+      type="text"
+      placeholder="Ask about your balance or recent transfers…"
+      [ngModel]="draft()"
+      (ngModelChange)="draft.set($event)"
+      name="draft"
+      [disabled]="sending()"
+      autocomplete="off"
+    />
+    <button class="btn" type="submit" [disabled]="sending() || !draft().trim()">Send</button>
+  </form>
+</div>
