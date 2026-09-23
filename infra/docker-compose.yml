@@ -86,6 +86,293 @@ services:
       - "1025:1025"   # SMTP
       - "8025:8025"   # Web UI: http://localhost:8025
 
+  # --- Application services -------------------------------------------------------------------------
+  # Everything below is optional: the infra above is enough for the per-service `mvnw spring-boot:run`
+  # workflow the README also documents. This is the "one-command" path instead — `docker compose up`
+  # from a clean clone builds all 9 Spring Boot services plus the Angular app and runs the whole system.
+  # Every JVM service is the same image built from ../infra/docker/service.Dockerfile with a different
+  # MODULE build arg; only the environment each one needs differs (compare against its own
+  # src/main/resources/application.yaml — these are exactly that file's ${VAR:default} placeholders,
+  # pointed at other containers by service name instead of localhost).
+
+  auth-service:
+    build:
+      context: ..
+      dockerfile: infra/docker/service.Dockerfile
+      args:
+        MODULE: services/auth-service
+    container_name: sentinelbank-auth-service
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-sentinelbank}
+      DB_USER: ${POSTGRES_USER:-sentinel}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-sentinel}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-dev-only-secret-change-me}
+      SEED_DEMO_USERS: ${SEED_DEMO_USERS:-true}
+      SEED_PASSWORD: ${SEED_PASSWORD:-Demo#12345}
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  account-service:
+    build:
+      context: ..
+      dockerfile: infra/docker/service.Dockerfile
+      args:
+        MODULE: services/account-service
+    container_name: sentinelbank-account-service
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-sentinelbank}
+      DB_USER: ${POSTGRES_USER:-sentinel}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-sentinel}
+      SEED_DEMO_ACCOUNTS: ${SEED_DEMO_ACCOUNTS:-true}
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  transaction-service:
+    build:
+      context: ..
+      dockerfile: infra/docker/service.Dockerfile
+      args:
+        MODULE: services/transaction-service
+    container_name: sentinelbank-transaction-service
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-sentinelbank}
+      DB_USER: ${POSTGRES_USER:-sentinel}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-sentinel}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      ACCOUNT_SERVICE_URL: http://account-service:8082
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      account-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  partner-bank-service:
+    build:
+      context: ..
+      dockerfile: infra/docker/service.Dockerfile
+      args:
+        MODULE: services/partner-bank-service
+    container_name: sentinelbank-partner-bank-service
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-sentinelbank}
+      DB_USER: ${POSTGRES_USER:-sentinel}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-sentinel}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  fraud-service:
+    build:
+      context: ..
+      dockerfile: infra/docker/service.Dockerfile
+      args:
+        MODULE: services/fraud-service
+    container_name: sentinelbank-fraud-service
+    environment:
+      MONGO_HOST: mongo
+      MONGO_PORT: 27017
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    ports:
+      - "8085:8085"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  notification-service:
+    build:
+      context: ..
+      dockerfile: infra/docker/service.Dockerfile
+      args:
+        MODULE: services/notification-service
+    container_name: sentinelbank-notification-service
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-sentinelbank}
+      DB_USER: ${POSTGRES_USER:-sentinel}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-sentinel}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      MAILHOG_HOST: mailhog
+      MAILHOG_PORT: 1025
+      ACCOUNT_SERVICE_URL: http://account-service:8082
+      AUTH_SERVICE_URL: http://auth-service:8081
+    ports:
+      - "8086:8086"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      account-service:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  audit-service:
+    build:
+      context: ..
+      dockerfile: infra/docker/service.Dockerfile
+      args:
+        MODULE: services/audit-service
+    container_name: sentinelbank-audit-service
+    environment:
+      MONGO_HOST: mongo
+      MONGO_PORT: 27017
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    ports:
+      - "8087:8087"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8087/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  ai-agent-service:
+    build:
+      context: ..
+      dockerfile: infra/docker/service.Dockerfile
+      args:
+        MODULE: services/ai-agent-service
+    container_name: sentinelbank-ai-agent-service
+    environment:
+      ACCOUNT_SERVICE_URL: http://account-service:8082
+      TRANSACTION_SERVICE_URL: http://transaction-service:8083
+      # Ollama itself is NOT containerized here (a multi-GB model image is a lot to ask of a demo compose
+      # file) — it's expected to already be running on your machine, and Docker Desktop's own DNS name
+      # for that is host.docker.internal. If Ollama isn't running at all, this service still starts fine
+      # and the /ai/ask endpoint degrades to its honest "temporarily unavailable" fallback (see the
+      # "Spending assistant" section below) rather than failing to boot.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    ports:
+      - "8088:8088"
+    depends_on:
+      account-service:
+        condition: service_healthy
+      transaction-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: infra/docker/service.Dockerfile
+      args:
+        MODULE: services/api-gateway
+    container_name: sentinelbank-api-gateway
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-dev-only-secret-change-me}
+      AUTH_SERVICE_URL: http://auth-service:8081
+      ACCOUNT_SERVICE_URL: http://account-service:8082
+      TRANSACTION_SERVICE_URL: http://transaction-service:8083
+      FRAUD_SERVICE_URL: http://fraud-service:8085
+      AUDIT_SERVICE_URL: http://audit-service:8087
+      AI_AGENT_SERVICE_URL: http://ai-agent-service:8088
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:4200}
+    ports:
+      - "8080:8080"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+      transaction-service:
+        condition: service_healthy
+      fraud-service:
+        condition: service_healthy
+      audit-service:
+        condition: service_healthy
+      ai-agent-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+    container_name: sentinelbank-frontend
+    ports:
+      - "4200:80"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+
 volumes:
   postgres-data:
   mongo-data:
