@@ -9,7 +9,7 @@
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
 ![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
 
-> **Project status:** in active development (12-day solo build). Days 1-9 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. **fraud-service watches every transfer asynchronously**, opening a case in MongoDB when a rule fires (large amount, round amount, velocity, new beneficiary), idempotently and visible only to analysts. **notification-service emails the customer** when a transfer completes or fails (MailHog locally), and **audit-service keeps a complete, append-only trail** of every `transfer.*` event, both as independent consumer groups off the same events everyone else already reacts to. **The whole flow is now driven from a real Angular UI**: login and registration, opening accounts and reading their ledgers, sending transfers with live status updates as the saga settles, and a role-guarded `/analyst` area for fraud cases and the audit trail. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** in active development (12-day solo build). Days 1-10 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. **fraud-service watches every transfer asynchronously**, opening a case in MongoDB when a rule fires (large amount, round amount, velocity, new beneficiary), idempotently and visible only to analysts. **notification-service emails the customer** when a transfer completes or fails (MailHog locally), and **audit-service keeps a complete, append-only trail** of every `transfer.*` event, both as independent consumer groups off the same events everyone else already reacts to. **The whole flow is now driven from a real Angular UI**: login and registration, opening accounts and reading their ledgers, sending transfers with live status updates as the saga settles, and a role-guarded `/analyst` area for fraud cases and the audit trail. **The whole system has now been hardened and proved live**: every service's integration test suite covers idempotent replay, optimistic-lock concurrency, outbox-to-Kafka delivery and saga failure/undo, resilience4j's circuit breakers are proven to actually open and recover (not just retry), and partner-bank-service has been killed and restarted against the live system to watch the saga survive a real outage with zero data loss. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -642,6 +642,47 @@ A few things worth knowing about how it talks to the backend:
 - **Refresh tokens are single-use** (see the Security details above), so a functional `HttpInterceptorFn` makes sure a burst of requests that all land after the access token expires triggers exactly one `/auth/refresh` call, not one per request — every request that hits a 401 while a refresh is already in flight waits on that same refresh instead of firing its own (a second concurrent refresh would revoke the first one's brand-new token before it was ever used).
 - **Every error is read from the same RFC 9457 shape** every service in this project already reports errors in (`common`'s `GlobalExceptionHandler`, and the gateway's own `ProblemResponses`) — one small `friendlyErrorMessage()` helper covers a business rejection, a validation failure, the gateway's `429`/`503`/`504`, and a plain network failure, so every form in the app shows a real, specific error instead of a generic "something went wrong."
 
+### Hardening and integration tests (Day 10)
+
+Days 1-9 already left every service with a solid integration test suite, written alongside each feature rather than deferred — by Day 10 the plan's own checklist (idempotent replay, optimistic-lock concurrency, outbox-to-Kafka, saga failure/undo) was already covered: account-service's `AccountLedgerServiceTests` runs concurrent debits against a real PostgreSQL and asserts no lost update; transaction-service's `TransferApiTests` and `OutboxPublisherTests` cover idempotency key replay (sequential and concurrent) and exactly-once outbox publication; `TransferResultListenerTests` (in both transaction-service and fraud/notification/audit-service's own listener tests) cover redelivery safety across the board. Day 10's real, honest gap was narrower: **nothing had ever proven the circuit breaker half of resilience4j** — every existing test proved `@Retry` (a failing call, retried, then a clean failure), never that enough consecutive failures actually **opens** the breaker, stops calls from reaching a struggling service at all, and **recovers** once it's healthy again.
+
+Two new tests close that gap — `AccountServiceClientResilienceTests`, one in transaction-service (the synchronous debit call) and one in notification-service (resolving a transfer's recipient) — each driving the real client directly against a stub that starts failing, with the breaker's window sized down for the test (the real `sliding-window-size: 20` / `minimum-number-of-calls: 10` from application.yaml is right for production traffic, not for tripping a breaker deterministically in a handful of calls):
+
+```bash
+cd services/transaction-service && ../../mvnw test -Dtest=AccountServiceClientResilienceTests
+```
+
+Both prove the same three things: enough failures open the circuit; a call made while it's open is rejected **locally** — the stub's own call counter is asserted not to move, proving the request never went over the network at all; and once the downstream service is healthy again, the breaker's half-open trial call succeeds and closes it.
+
+**The live drill — killing Partner Bank for real**, the plan's own "done when" for this day, run against the actual running system, not a test:
+
+```bash
+# 1. All 8 services up, a transfer sent normally — POST /transfers debits synchronously and returns 201
+# 2. Kill partner-bank-service (the only consumer of transfer.initiated)
+kill <partner-bank-service pid>
+
+# 3. Send another transfer — it's still accepted and still debits (the debit and the outbox write happen
+#    in transaction-service's own database transaction, entirely independent of partner-bank-service)
+curl -s -X POST http://localhost:8080/api/transfers -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: chaos-drill' \
+  -d '{"fromAccountId":"<id>","toAccountId":"PARTNER-CHAOS-DRILL","amountMinor":150000}'
+# {"status":"DEBITED",...} — and it stays exactly there, checked repeatedly, for as long as Partner Bank is down
+
+# 4. Confirm the message is durably queued, not lost, not retried into a DLT (partner-bank-service is
+#    down, not failing — Kafka just holds it):
+docker exec sentinelbank-kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+  --describe --group partner-bank-service
+# Consumer group 'partner-bank-service' has no active members.
+# ... transfer.initiated  1  21  22  1  ...   <- lag of exactly the one message sent while it was down
+
+# 5. Restart partner-bank-service — no other command, no manual re-trigger
+cd services/partner-bank-service && ./mvnw spring-boot:run
+```
+
+What happened next, entirely on its own: partner-bank-service rejoined the consumer group, the lag drained to 0, and the transfer moved straight to `COMPLETED` — the audit trail shows `transfer.initiated` and `transfer.completed` about 50 seconds apart, exactly the length of the outage. **fraud-service was never affected at all**: it processed the same `transfer.initiated` event and opened its case within a second of the original request, because it is a completely independent consumer group on the same topic — partner-bank-service's downtime never touched it. notification-service, by contrast, correctly waited the full 50 seconds for the real `transfer.completed` event before sending its email, rather than guessing. One outage, four consumer groups, each behaving exactly as its own design says it should.
+
+Resilience4j's settings themselves (`sliding-window-size: 20`, `minimum-number-of-calls: 10`, `failure-rate-threshold: 50`, `wait-duration-in-open-state: 10s`, `ignore-exceptions` excluding 4xx business rejections from ever tripping the breaker) were reviewed for this day rather than changed — they were already sound, identical across transaction-service and notification-service, and now actually proven by a test instead of just declared in YAML.
+
 ### Demo script (planned, Day 12)
 1. Register and log in.
 2. Make a transfer, then check that balances changed, an audit event exists and a notification was sent.
@@ -679,7 +720,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 | 7 | Fraud service (rules, cases) | ✅ done |
 | 8 | Notification and Audit services | ✅ done |
 | 9 | Angular app (customer and analyst views) | ✅ done |
-| 10 | Hardening and integration tests (Testcontainers) | ⬜ |
+| 10 | Hardening and integration tests (Testcontainers) | ✅ done |
 | 11 | AI agent (thin, read-only) and buffer | ⬜ |
 | 12 | Polish, README, demo script, optional Kubernetes | ⬜ |
 

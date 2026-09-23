@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
@@ -20,6 +21,11 @@ import com.sun.net.httpserver.HttpServer;
  */
 final class StubUpstreamServices implements AutoCloseable {
 
+	enum AccountBehavior {
+		SUCCEED,
+		SERVER_ERROR
+	}
+
 	private record UserFixture(String email, String fullName) {
 	}
 
@@ -30,6 +36,12 @@ final class StubUpstreamServices implements AutoCloseable {
 	private final Map<UUID, UUID> accountOwners = new ConcurrentHashMap<>();
 
 	private final Map<UUID, UserFixture> users = new ConcurrentHashMap<>();
+
+	private volatile AccountBehavior accountBehavior = AccountBehavior.SUCCEED;
+
+	// Day 10: tracks how many times /internal/accounts/{id} was actually reached, so a resilience test can
+	// prove an open circuit breaker stopped calls from reaching here at all, not just that they failed.
+	private final AtomicInteger totalAccountCalls = new AtomicInteger();
 
 	StubUpstreamServices() {
 		try {
@@ -55,7 +67,22 @@ final class StubUpstreamServices implements AutoCloseable {
 		users.put(userId, new UserFixture(email, fullName));
 	}
 
+	void setAccountBehavior(AccountBehavior behavior) {
+		this.accountBehavior = behavior;
+	}
+
+	/** Total calls to {@code GET /internal/accounts/{id}} since this stub was created; only meaningful as
+	 * a before/after delta in a test. */
+	int totalAccountCalls() {
+		return totalAccountCalls.get();
+	}
+
 	private void handleGetAccount(HttpExchange exchange) throws IOException {
+		totalAccountCalls.incrementAndGet();
+		if (accountBehavior == AccountBehavior.SERVER_ERROR) {
+			sendJson(exchange, 500, Map.of("code", "INTERNAL_ERROR", "detail", "boom"));
+			return;
+		}
 		UUID accountId = idFromPath(exchange.getRequestURI().getPath(), "/internal/accounts/");
 		UUID ownerId = accountOwners.get(accountId);
 		if (ownerId == null) {
