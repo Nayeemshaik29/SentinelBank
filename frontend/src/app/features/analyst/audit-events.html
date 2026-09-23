@@ -1,0 +1,65 @@
+<h1>Analyst</h1>
+
+<div class="tabs">
+  <a routerLink="/analyst/fraud-cases" routerLinkActive="active">Fraud Cases</a>
+  <a routerLink="/analyst/audit-events" routerLinkActive="active">Audit Trail</a>
+</div>
+
+@if (errorMessage()) {
+  <div class="alert alert-danger">{{ errorMessage() }}</div>
+}
+
+<div class="card" style="margin-bottom: 20px">
+  <div class="toolbar" style="margin-bottom: 0">
+    <div class="field" style="margin-bottom: 0; flex: 1; max-width: 420px">
+      <label for="transferId">Look up one transfer's full story</label>
+      <input
+        id="transferId"
+        type="text"
+        placeholder="paste a transfer id…"
+        [(ngModel)]="searchTransferId"
+        (keyup.enter)="search()"
+      />
+    </div>
+    <div style="display: flex; gap: 8px; align-self: flex-end">
+      <button class="btn" type="button" (click)="search()">Search</button>
+      <button class="btn btn-secondary" type="button" (click)="loadRecent()">Recent feed</button>
+    </div>
+  </div>
+</div>
+
+@if (loading()) {
+  <p class="muted">Loading events…</p>
+} @else if (events().length === 0) {
+  <div class="card empty-state">No audit events found.</div>
+} @else {
+  <table>
+    <thead>
+      <tr>
+        <th>Event</th>
+        <th>Transfer</th>
+        <th>When</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (event of events(); track event.eventId) {
+        <tr (click)="toggleExpanded(event.eventId)" style="cursor: pointer">
+          <td>
+            <span class="badge badge-neutral">{{ event.eventType }}</span>
+          </td>
+          <td class="mono">{{ event.aggregateId.slice(0, 8) }}</td>
+          <td class="muted">{{ event.occurredAt | date: 'medium' }}</td>
+          <td class="muted">{{ expandedEventId() === event.eventId ? '▲' : '▼' }}</td>
+        </tr>
+        @if (expandedEventId() === event.eventId) {
+          <tr>
+            <td colspan="4">
+              <pre class="mono payload">{{ event.payload | json }}</pre>
+            </td>
+          </tr>
+        }
+      }
+    </tbody>
+  </table>
+}

@@ -1,0 +1,52 @@
+<h1>Analyst</h1>
+
+<div class="tabs">
+  <a routerLink="/analyst/fraud-cases" routerLinkActive="active">Fraud Cases</a>
+  <a routerLink="/analyst/audit-events" routerLinkActive="active">Audit Trail</a>
+</div>
+
+@if (errorMessage()) {
+  <div class="alert alert-danger">{{ errorMessage() }}</div>
+}
+
+<div class="toolbar">
+  <h2 style="margin: 0">Open fraud cases</h2>
+  <button class="btn btn-secondary" type="button" (click)="load()">Refresh</button>
+</div>
+
+@if (loading()) {
+  <p class="muted">Loading cases…</p>
+} @else if (cases().length === 0) {
+  <div class="card empty-state">No fraud cases — nothing flagged yet.</div>
+} @else {
+  @for (fraudCase of cases(); track fraudCase.transferId) {
+    <div class="card" style="margin-bottom: 14px">
+      <div class="toolbar" style="margin-bottom: 10px">
+        <div>
+          <div style="font-weight: 700; font-size: 17px">
+            {{ formatMoney(fraudCase.amountMinor, fraudCase.currency) }}
+          </div>
+          <div class="muted mono">
+            {{ fraudCase.fromAccountId.slice(0, 8) }} → {{ fraudCase.toAccountId }}
+          </div>
+        </div>
+        <span
+          class="badge"
+          [class.badge-warning]="fraudCase.status === 'OPEN'"
+          [class.badge-danger]="fraudCase.status === 'CONFIRMED'"
+          [class.badge-neutral]="fraudCase.status === 'CLOSED_FALSE_POSITIVE'"
+        >
+          {{ fraudCase.status }}
+        </span>
+      </div>
+      <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px">
+        @for (reason of fraudCase.reasons; track reason) {
+          <span class="badge badge-neutral">{{ reason }}</span>
+        }
+      </div>
+      <div class="muted" style="font-size: 13px">
+        Transfer <span class="mono">{{ fraudCase.transferId }}</span> · flagged {{ fraudCase.createdAt | date: 'medium' }}
+      </div>
+    </div>
+  }
+}

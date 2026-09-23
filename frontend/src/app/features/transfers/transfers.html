@@ -1,0 +1,91 @@
+<h1>Transfers</h1>
+
+@if (errorMessage()) {
+  <div class="alert alert-danger">{{ errorMessage() }}</div>
+}
+
+<form class="card" [formGroup]="form" (ngSubmit)="submit()">
+  <h2 style="margin-bottom: 16px">Send money</h2>
+
+  @if (accounts().length === 0) {
+    <p class="muted">You need an account before you can send a transfer. Open one on the Accounts page.</p>
+  } @else {
+    <div class="field">
+      <label for="fromAccountId">From account</label>
+      <select id="fromAccountId" formControlName="fromAccountId">
+        @for (account of accounts(); track account.id) {
+          <option [value]="account.id">
+            {{ account.accountNumber }} — {{ formatMoney(account.balanceMinor, account.currency) }}
+          </option>
+        }
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="toAccountId">To (recipient reference)</label>
+      <input id="toAccountId" type="text" formControlName="toAccountId" placeholder="PARTNER-ACC-1" />
+      @if (form.controls.toAccountId.invalid && form.controls.toAccountId.touched) {
+        <span class="field-error">A recipient reference is required</span>
+      }
+    </div>
+
+    <div class="field" style="max-width: 200px">
+      <label for="amount">Amount ({{ currencyFor(form.controls.fromAccountId.value) }})</label>
+      <input id="amount" type="number" step="0.01" min="0.01" formControlName="amount" />
+      @if (form.controls.amount.invalid && form.controls.amount.touched) {
+        <span class="field-error">Enter an amount greater than 0</span>
+      }
+    </div>
+
+    <button class="btn" type="submit" [disabled]="submitting()">
+      {{ submitting() ? 'Sending…' : 'Send transfer' }}
+    </button>
+  }
+</form>
+
+<div class="card">
+  <div class="toolbar" style="margin-bottom: 12px">
+    <h2 style="margin: 0">History</h2>
+    <button class="btn btn-secondary" type="button" (click)="loadTransfers()">Refresh</button>
+  </div>
+
+  @if (loading()) {
+    <p class="muted">Loading transfers…</p>
+  } @else if (transfers().length === 0) {
+    <div class="empty-state">No transfers yet.</div>
+  } @else {
+    <table>
+      <thead>
+        <tr>
+          <th>To</th>
+          <th>Amount</th>
+          <th>Status</th>
+          <th>Reference</th>
+          <th>When</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (transfer of transfers(); track transfer.id) {
+          <tr>
+            <td class="mono">{{ transfer.toAccountId }}</td>
+            <td>{{ formatMoney(transfer.amountMinor, transfer.currency) }}</td>
+            <td>
+              <span
+                class="badge"
+                [class.badge-success]="transfer.status === 'COMPLETED'"
+                [class.badge-danger]="transfer.status === 'FAILED'"
+                [class.badge-warning]="transfer.status === 'REVERSED' || transfer.status === 'COMPENSATING'"
+                [class.badge-neutral]="transfer.status === 'PENDING' || transfer.status === 'DEBITED'"
+                [title]="transfer.failureDetail ?? ''"
+              >
+                {{ transfer.status }}
+              </span>
+            </td>
+            <td class="muted mono">{{ transfer.id.slice(0, 8) }}</td>
+            <td class="muted">{{ transfer.createdAt | date: 'medium' }}</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  }
+</div>

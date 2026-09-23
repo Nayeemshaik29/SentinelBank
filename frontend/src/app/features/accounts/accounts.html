@@ -1,0 +1,92 @@
+<div class="toolbar">
+  <h1>Your accounts</h1>
+  <button class="btn" type="button" (click)="showOpenForm.set(!showOpenForm())">
+    {{ showOpenForm() ? 'Cancel' : '+ Open account' }}
+  </button>
+</div>
+
+@if (errorMessage()) {
+  <div class="alert alert-danger">{{ errorMessage() }}</div>
+}
+
+@if (showOpenForm()) {
+  <form class="card" [formGroup]="openForm" (ngSubmit)="openAccount()" style="margin-bottom: 20px">
+    <div class="field" style="max-width: 200px">
+      <label for="currency">Currency</label>
+      <input id="currency" type="text" formControlName="currency" maxlength="3" placeholder="USD" />
+      @if (openForm.controls.currency.invalid && openForm.controls.currency.touched) {
+        <span class="field-error">3-letter ISO code, e.g. USD</span>
+      }
+    </div>
+    <button class="btn" type="submit" [disabled]="openingAccount()">
+      {{ openingAccount() ? 'Opening…' : 'Open account' }}
+    </button>
+  </form>
+}
+
+@if (loading()) {
+  <p class="muted">Loading accounts…</p>
+} @else if (accounts().length === 0) {
+  <div class="card empty-state">No accounts yet. Open one to get started.</div>
+} @else {
+  @for (account of accounts(); track account.id) {
+    <div class="card" style="margin-bottom: 16px">
+      <div class="toolbar" style="margin-bottom: 0">
+        <div>
+          <div style="font-weight: 700; font-size: 18px">{{ formatMoney(account.balanceMinor, account.currency) }}</div>
+          <div class="muted mono">{{ account.accountNumber }} · {{ account.currency }}</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px">
+          <span
+            class="badge"
+            [class.badge-success]="account.status === 'ACTIVE'"
+            [class.badge-warning]="account.status === 'FROZEN'"
+            [class.badge-neutral]="account.status === 'CLOSED'"
+          >
+            {{ account.status }}
+          </span>
+          <button class="btn btn-secondary" type="button" (click)="toggleLedger(account.id)">
+            {{ expandedAccountId() === account.id ? 'Hide ledger' : 'View ledger' }}
+          </button>
+        </div>
+      </div>
+
+      @if (expandedAccountId() === account.id) {
+        <div style="margin-top: 16px; border-top: 1px solid var(--color-border); padding-top: 16px">
+          @if (ledgerLoading()) {
+            <p class="muted">Loading ledger…</p>
+          } @else if (ledgerEntries().length === 0) {
+            <p class="muted">No ledger entries yet.</p>
+          } @else {
+            <table>
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Amount</th>
+                  <th>Balance after</th>
+                  <th>Description</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (entry of ledgerEntries(); track entry.id) {
+                  <tr>
+                    <td>
+                      <span class="badge" [class.badge-success]="entry.entryType === 'CREDIT'" [class.badge-danger]="entry.entryType === 'DEBIT'">
+                        {{ entry.entryType }}
+                      </span>
+                    </td>
+                    <td>{{ formatMoney(entry.amountMinor, account.currency) }}</td>
+                    <td>{{ formatMoney(entry.balanceAfter, account.currency) }}</td>
+                    <td class="muted">{{ entry.description }}</td>
+                    <td class="muted">{{ entry.createdAt | date: 'medium' }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          }
+        </div>
+      }
+    </div>
+  }
+}

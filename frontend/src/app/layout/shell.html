@@ -1,0 +1,28 @@
+<div class="shell">
+  <header class="shell-header">
+    <div class="shell-header-inner">
+      <span class="brand">SentinelBank</span>
+
+      <nav class="nav">
+        @if (authService.hasRole('CUSTOMER')) {
+          <a routerLink="/accounts" routerLinkActive="active">Accounts</a>
+          <a routerLink="/transfers" routerLinkActive="active">Transfers</a>
+        }
+        @if (authService.hasRole('ANALYST')) {
+          <a routerLink="/analyst/fraud-cases" routerLinkActive="active">Fraud Cases</a>
+          <a routerLink="/analyst/audit-events" routerLinkActive="active">Audit Trail</a>
+        }
+      </nav>
+
+      <div class="account-menu">
+        <span class="muted mono">{{ authService.currentUser()?.email }}</span>
+        <span class="badge badge-neutral">{{ authService.currentUser()?.roles?.join(', ') }}</span>
+        <button class="btn btn-secondary" type="button" (click)="logout()">Sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <router-outlet />
+  </main>
+</div>

@@ -9,7 +9,7 @@
 ![Docker](https://img.shields.io/badge/Docker%20Compose-local%20deploy-2496ED)
 ![Status](https://img.shields.io/badge/status-under%20active%20development-yellow)
 
-> **Project status:** in active development (12-day solo build). Days 1-8 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. **fraud-service watches every transfer asynchronously**, opening a case in MongoDB when a rule fires (large amount, round amount, velocity, new beneficiary), idempotently and visible only to analysts. **notification-service emails the customer** when a transfer completes or fails (MailHog locally), and **audit-service keeps a complete, append-only trail** of every `transfer.*` event, both as independent consumer groups off the same events everyone else already reacts to. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
+> **Project status:** in active development (12-day solo build). Days 1-9 are done: the 9 services are scaffolded, the shared `common` library exists, the local infrastructure (PostgreSQL, MongoDB, Kafka, MailHog) starts with one command, **login, JWT security and the API gateway work end to end**, the **account ledger enforces optimistic locking and idempotency under real concurrency**, **transfers debit an account and write a transactional outbox row atomically**, a **poller reliably publishes those rows to Kafka**, and — the plan's own go/no-go checkpoint — **the full saga runs end to end**: partner-bank-service consumes, credits and publishes a result; transaction-service consumes that result and either completes the transfer or **compensates it, refunding the customer automatically**, all backed by a real two-tier retry-then-dead-letter-topic mechanism. **fraud-service watches every transfer asynchronously**, opening a case in MongoDB when a rule fires (large amount, round amount, velocity, new beneficiary), idempotently and visible only to analysts. **notification-service emails the customer** when a transfer completes or fails (MailHog locally), and **audit-service keeps a complete, append-only trail** of every `transfer.*` event, both as independent consumer groups off the same events everyone else already reacts to. **The whole flow is now driven from a real Angular UI**: login and registration, opening accounts and reading their ledgers, sending transfers with live status updates as the saga settles, and a role-guarded `/analyst` area for fraud cases and the audit trail. Business logic is being added service by service. See the [Roadmap](#roadmap) for exactly what is done and what is next. Nothing in this README claims a feature that isn't built yet: anything not finished is marked *planned*.
 
 ---
 
@@ -130,9 +130,9 @@ flowchart TD
     D --> E["App generates an Idempotency-Key<br/>and sends the request"]
     E --> F{"Accepted?"}
     F -- "no: bad input or insufficient funds" --> G["Clear error message,<br/>nothing was debited"]
-    F -- "yes" --> H["Status: PENDING"]
-    H --> I["Status updates to COMPLETED<br/>or REVERSED"]
-    I --> J["Email / SMS notification"]
+    F -- "yes" --> H["Status: DEBITED"]
+    H --> I["Status updates live to COMPLETED<br/>or REVERSED, no manual refresh"]
+    I --> J["Email notification"]
     I --> K["Transfer shows in history"]
     C --> L["Ask the AI assistant<br/>about recent spending"]
 ```
@@ -141,17 +141,13 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A([Analyst logs in]) --> B["Analyst dashboard"]
-    B --> C["List of open fraud cases"]
-    C --> D["Open a case:<br/>see the transfer, the rule that fired, history"]
-    D --> E{"Decision"}
-    E -- "genuine" --> F["Close as false positive"]
-    E -- "suspicious" --> G["Mark as confirmed / escalate"]
-    F --> H["Decision written to the audit trail"]
-    G --> H
+    A([Analyst logs in]) --> B["Fraud Cases tab"]
+    B --> C["List of open fraud cases,<br/>with amount and the rule(s) that fired"]
+    A --> D["Audit Trail tab"]
+    D --> E["Recent feed, or look up<br/>one transfer's full story by id"]
 ```
 
-Fraud detection is **asynchronous**: rules run when the transfer event is consumed. It flags rather than blocks (see [trade-offs](#design-decisions-and-trade-offs)).
+Fraud detection is **asynchronous**: rules run when the transfer event is consumed. It flags rather than blocks (see [trade-offs](#design-decisions-and-trade-offs)). Deciding a case — closing it as a false positive or confirming and escalating it — is a **planned** feature, not a built one: fraud-service only creates and lists cases today (`CaseStatus` already has `CONFIRMED` and `CLOSED_FALSE_POSITIVE` values reserved for it, per its own javadoc), and there is no UI or API to change a case's status yet.
 
 ---
 
@@ -299,7 +295,7 @@ Each topic also has a `.retry` and a `.dlt` companion. Messages are keyed by `ac
 | Databases | PostgreSQL (Flyway migrations), MongoDB |
 | Messaging | Apache Kafka (KRaft mode) |
 | AI | Spring AI with Ollama (local LLM) |
-| Frontend | Angular |
+| Frontend | Angular 22 (standalone components, signals, zoneless) |
 | Testing | JUnit 5, Testcontainers |
 | Build / run | Maven (wrapper per service), Docker Compose |
 
@@ -345,9 +341,9 @@ docker compose -f infra/docker-compose.yml up -d
 cd services/api-gateway
 ./mvnw spring-boot:run
 
-# 4. Run the Angular app  (planned, Day 9)
+# 4. Run the Angular app, once at least auth/account/transaction/api-gateway are up
 cd frontend
-npm install && npm start
+npm install && npm start   # http://localhost:4200
 ```
 
 What step 1 gives you:
@@ -361,9 +357,9 @@ What step 1 gives you:
 
 To stop everything: `docker compose -f infra/docker-compose.yml down` (add `-v` to also wipe the data).
 
-### What you can try today (Days 1-8)
+### What you can try today (Days 1-9)
 
-Start the infrastructure (above), install the shared library once, then run eight services in separate terminals:
+Start the infrastructure (above), install the shared library once, then run eight services in separate terminals (a ninth terminal, `cd frontend && npm install && npm start`, gives you the actual Angular UI at `http://localhost:4200` instead of curl — see [Angular app](#angular-app-day-9) below):
 
 ```bash
 ./mvnw -q -pl common install
@@ -625,6 +621,27 @@ Unlike fraud-service's typed payload records, audit-service deliberately deseria
 
 Gateway access for both follows the established back-office model: `/api/audit/**` is `ANALYST`-only, same as `/api/fraud/**`. notification-service has no gateway route at all — it has no API for a person to call, only a Kafka consumer.
 
+### Angular app (Day 9)
+
+One Angular app (not two, per the plan's scope decisions), standalone components, signals, zoneless — the modern Angular 22 default, no `zone.js` in the dependency tree at all. `cd frontend && npm install && npm start` and it's at `http://localhost:4200`, talking straight to the gateway.
+
+**Routing mirrors the role split everywhere else in this project**: `authGuard` sends anyone without a valid session to `/login`, remembering where they were headed (`?redirectTo=`) so signing in lands them back there instead of on the generic home page. `roleGuard(['CUSTOMER'])` and `roleGuard(['ANALYST'])` then split the authenticated area exactly the way the gateway's own `SecurityConfig` does — a customer who types `/analyst/fraud-cases` into the address bar gets a friendly "not available for your role" page, not a broken screen or a raw 403 from the API.
+
+| Route | Who | What |
+|---|---|---|
+| `/login`, `/register` | anyone | Sign in, or register then auto-login (register itself returns no tokens — see auth-service's `AuthController` — so the form signs in immediately after with the same credentials) |
+| `/accounts` | `CUSTOMER` | List accounts, open a new one, expand any account to see its ledger |
+| `/transfers` | `CUSTOMER` | The transfer form (generates its own `Idempotency-Key` per submission) and transfer history |
+| `/analyst/fraud-cases` | `ANALYST` | Every open fraud case, reasons and amount |
+| `/analyst/audit-events` | `ANALYST` | The recent audit feed, or look up one transfer's complete story by id |
+
+A few things worth knowing about how it talks to the backend:
+
+- **The JWT is the only source of truth for identity in the browser too.** `AuthService` decodes the access token's own claims (`sub`, `email`, `roles`) for routing and the header — the same claims the gateway itself trusts — rather than keeping a separately-fetched profile in sync. `GET /auth/me` exists and is used, but only where the fuller profile (full name, KYC status) actually needs to be shown.
+- **A transfer settles asynchronously** (the saga runs over Kafka, same as every other day), so right after `POST /transfers` returns `DEBITED`, the transfers page polls a few times, a second apart, until every visible transfer reaches a terminal status — the badge flips from `DEBITED` to `COMPLETED` (or to `REVERSED`, with the failure reason in the amount badge's tooltip) live, with no manual refresh needed.
+- **Refresh tokens are single-use** (see the Security details above), so a functional `HttpInterceptorFn` makes sure a burst of requests that all land after the access token expires triggers exactly one `/auth/refresh` call, not one per request — every request that hits a 401 while a refresh is already in flight waits on that same refresh instead of firing its own (a second concurrent refresh would revoke the first one's brand-new token before it was ever used).
+- **Every error is read from the same RFC 9457 shape** every service in this project already reports errors in (`common`'s `GlobalExceptionHandler`, and the gateway's own `ProblemResponses`) — one small `friendlyErrorMessage()` helper covers a business rejection, a validation failure, the gateway's `429`/`503`/`504`, and a plain network failure, so every form in the app shows a real, specific error instead of a generic "something went wrong."
+
 ### Demo script (planned, Day 12)
 1. Register and log in.
 2. Make a transfer, then check that balances changed, an audit event exists and a notification was sent.
@@ -661,7 +678,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ planned
 | 6 | Partner Bank, saga completion, compensation, retry and DLT | ✅ done |
 | 7 | Fraud service (rules, cases) | ✅ done |
 | 8 | Notification and Audit services | ✅ done |
-| 9 | Angular app (customer and analyst views) | ⬜ |
+| 9 | Angular app (customer and analyst views) | ✅ done |
 | 10 | Hardening and integration tests (Testcontainers) | ⬜ |
 | 11 | AI agent (thin, read-only) and buffer | ⬜ |
 | 12 | Polish, README, demo script, optional Kubernetes | ⬜ |
