@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 9+ (API 28+) blocks plain HTTP by default. This carves out one narrow exception — the
+  emulator's own alias for the host machine's localhost (see environment.mobile.ts) — so the app can
+  reach a locally-run `docker compose up` backend during development. Everything else still requires
+  HTTPS, including a real production backend once one exists; this file should be dropped entirely (or
+  the domain-config narrowed to nothing) once that's the only target.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
