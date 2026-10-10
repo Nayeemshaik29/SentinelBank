@@ -6,12 +6,6 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "frontend", "start", "--", "--port", "4200"],
       "port": 4200
-    },
-    {
-      "name": "portfolio",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "/Users/shaiknayeembasha/Documents/portfolio", "run", "dev", "--", "--port", "4321"],
-      "port": 4321
     }
   ]
 }
