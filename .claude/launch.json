@@ -29,6 +29,16 @@
       "port": 4321
     },
     {
+      "name": "vc-sample",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-I",
+        "-c",
+        "import http.server,functools;h=functools.partial(http.server.SimpleHTTPRequestHandler,directory='/private/tmp/claude-501/-Users-shaiknayeembasha-Documents-sentinelbank/454931f5-7a92-468e-907e-5b01d0d1159c/scratchpad/vc-preview');http.server.ThreadingHTTPServer(('127.0.0.1',4331),h).serve_forever()"
+      ],
+      "port": 4331
+    },
+    {
       "name": "avinash",
       "runtimeExecutable": "npm",
       "runtimeArgs": [
