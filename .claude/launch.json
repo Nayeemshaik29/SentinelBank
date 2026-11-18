@@ -51,6 +51,36 @@
         "4322"
       ],
       "port": 4322
+    },
+    {
+      "name": "softlaunch-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "/Users/shaiknayeembasha/Documents/softlaunch/web",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "3030"
+      ],
+      "port": 3030,
+      "autoPort": false
+    },
+    {
+      "name": "softlaunch-web-prod",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "/Users/shaiknayeembasha/Documents/softlaunch/web",
+        "run",
+        "start",
+        "--",
+        "--port",
+        "3031"
+      ],
+      "port": 3031,
+      "autoPort": false
     }
   ]
 }
